@@ -116,9 +116,23 @@ if (!Array.isArray(plugin.inject) || plugin.inject.join(",") !== "slots") failed
   const overlay = byName("shell.overlay");
   const main = byName("main");
   const rows = byName("sidebar.panellist");
+  const views = byName("conversation.view");
 
   if (settings.length !== 1 || settings[0].options.id !== "capability") failed.push("settings.section/capability missing");
   if (overlay.length !== 1 || overlay[0].options.id !== "capability-legacy-sessions") failed.push("shell.overlay seat missing");
+  // the per-conversation view: a tab next to the trajectory one, fed the session id
+  if (views.length !== 1) failed.push("conversation.view tab not registered (got " + views.length + ")");
+  if (views[0] !== undefined) {
+    if (views[0].options.id !== "capability") failed.push("conversation.view id should be capability, got " + String(views[0].options.id));
+    if (typeof views[0].options.order !== "number") failed.push("conversation.view order must be a number");
+    const label = typeof views[0].options.label === "function" ? views[0].options.label() : views[0].options.label;
+    if (label !== "能力管理") failed.push("conversation.view label should be 能力管理, got " + JSON.stringify(label));
+    if (typeof views[0].options.inject !== "function") failed.push("conversation.view must inject the session id");
+    else {
+      const injected = views[0].options.inject("sess-42");
+      if (injected?.sessionId !== "sess-42") failed.push("conversation.view inject must pass sessionId through, got " + JSON.stringify(injected));
+    }
+  }
   if (main.length !== 1) failed.push("main panel not registered (got " + main.length + ")");
   if (main[0] !== undefined && main[0].options.key !== PANEL_ID) failed.push("main panel key should be " + PANEL_ID + ", got " + main[0].options.key);
   if (rows.length !== 1) failed.push("sidebar.panellist row not registered (got " + rows.length + ")");

@@ -310,6 +310,16 @@ tmp/               # 插件内部临时文件（AI 不直接引用；无 args_fi
 - **决策：只扫描提示，不做修复**。扫描是插件该干的（判定成本低、结论稳定），修复不是（一次性的数据手术、每个库的形态都不同）。所以插件不附带修复脚本、不提供修复命令、不做自动修复；用户拿到报错后交给 AI 处理。同理，其它出口（如 `/mcp` 命令输出）不重复播报这条告警——提示只在设置页横幅与浮层各出现一次。
 - **测试**：`test/session-audit-smoke.mjs`（候选筛选、三种形状、正文转义提及不误判、已修形态判干净、明文日志、受影响保持重扫、扫到 0 退休、退休后不重写记录、空库立即退休、缺失根目录不报错、`running()` 只在扫描真在跑时为真、客户端契约与"三种提示各用各的标记、横幅不读浮层标记"的字符串守卫）。
 
+### 5.16 会话级能力策略（对话内的「能力管理」）
+
+**问题**：能力库只能改全局配置。可「这个对话里我不想让它用 reqable」「这条会话先别给模型看这个技能」是会话级的诉求，改全局再改回来既麻烦又会波及其它对话。
+
+- **存储**：`dataDir/session-caps.json`，`{ [sessionId]: { mcp: [denied], skills: [denied] } }`（记拒绝项，默认全开）；空策略自动从文件删除。按会话 id 落盘，重开对话仍然生效。
+- **作用点（四处，全部读实时策略）**：① `agent/pre-step` 的目录注入过滤掉被拒 MCP；② `ensureSessionRuntime` 跳过被拒条目、并断开已连上的；③ `mcp_load` / `mcp_call` 对拒绝项直接报 `disabled in this conversation`；④ 技能侧两道：会话层影子（`ctx.skills.register()` 在 agent 自己的层里注册同名、`modelInvocable:false`，尽力让目录也不列它）+ `tools/pre-execute` 守卫（在 agent 上下文注册，宿主按 scope 只派发该 agent 的调用，命中被拒技能直接 `deny`）。影子依赖层优先级，守卫才是硬保证，所以两层都做。
+- **scope 语义**：宿主的 `SkillViewOptions.scope` 直接吃 **agent 对象**（`scope: agent`），`cwd` 用 `ctx.workingDirectory.ensure(agent)` —— 与本插件之外的消费者（`dsh-tool-skill`）一致。
+- **接口**：`GET /session-caps?session=<id>` 列当前对话可见的 MCP 与技能（含 enabled）、`POST /session-caps {session, kind, name, enabled}` 翻一个；同一个 path 用方法分发。
+- **UI**：注册 `conversation.view`（id `capability`、order 11、`label: () => "能力管理"`、`inject: (sessionId) => ({sessionId})`），渲染两组行内开关；开关只写会话策略，不碰注册表与 frontmatter。
+- **测试**：`test/session-caps-smoke.mjs`（假 agent：目录过滤、mcp_load 拒绝、守卫 allow/deny/不误伤其它工具、影子注册与释放、落盘与恢复、空策略删文件）。故障注入：去掉目录过滤 / 去掉 mcp_load 守卫 / 不注册技能守卫，三条都会红。
 ### 5.15 残留 MCP 子进程清理（`lib/orphans.js`）
 
 **问题**：stdio MCP 每次异常退出或重启，都可能在系统里留下整条 `npx → cmd → node` 链；本机一次累积 40 个（历次重启 + 那次重复 serverName 的失败激活）。它们不连任何会话、白占内存，用户却只能去任务管理器里猜哪几个是 MCP。

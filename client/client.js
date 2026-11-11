@@ -1275,6 +1275,108 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     );
   }
 
+  // ── per-conversation capability view ─────────────────────────────────────
+  // A tab in the conversation's view switcher (next to 轨迹). It edits the policy
+  // of THIS conversation only: turning a server or a skill off drops it from this
+  // chat's tool surface and catalog without touching 能力库's global settings.
+  function CapabilityView(props) {
+    const sessionId = typeof props.sessionId === "string" ? props.sessionId : "";
+    const [state, setState] = useState(null);
+    const [error, setError] = useState("");
+    const [busy, setBusy] = useState("");
+
+    const load = useCallback(async () => {
+      if (sessionId === "") return;
+      try {
+        const data = await getJson("/skill-mcp-manager/session-caps?session=" + encodeURIComponent(sessionId));
+        setState(data);
+        setError("");
+      } catch (err) {
+        setError(errText(err));
+      }
+    }, [sessionId]);
+
+    useEffect(() => { load(); }, [load]);
+
+    async function flip(kind, name, enabled) {
+      const key = kind + ":" + name;
+      setBusy(key);
+      try {
+        const data = await postJson("/skill-mcp-manager/session-caps", { session: sessionId, kind, name, enabled });
+        setState(data);
+        setError("");
+      } catch (err) {
+        setError(errText(err));
+      } finally {
+        setBusy("");
+      }
+    }
+
+    function row(kind, item, meta) {
+      const key = kind + ":" + item.name;
+      return h("li", { key, className: cx("smx-tool", !item.enabled && "is-disabled") },
+        h("span", { className: "smx-tool__name" }, item.name),
+        h("span", { className: "smx-tool__desc" }, meta),
+        h("span", { className: "smx-view__switch" },
+          h(Switch, {
+            checked: item.enabled,
+            disabled: busy === key,
+            onChange: (next) => flip(kind, item.name, next),
+          }),
+          h("span", { className: "smx-switchline__label" }, item.enabled ? "可用" : "本对话已移除"),
+        ),
+      );
+    }
+
+    const mcp = (state && state.mcp) || [];
+    const skills = (state && state.skills) || [];
+
+    return h("div", { className: "smx-view" },
+      h("div", { className: "smx-head" },
+        h("div", null,
+          h("h2", { className: "smx-title" }, "能力管理"),
+          h("div", { className: "smx-subtitle" },
+            "只影响这个对话：关掉的 MCP 与技能会从本对话的工具面和技能目录里移除，全局配置不变"),
+        ),
+        h("div", { className: "smx-head__meta" },
+          h("span", { className: "smx-count" }, state === null ? "" : (state.live ? "会话运行中" : "会话未启动")),
+          h("button", { type: "button", className: "smx-btn", onClick: load }, "刷新"),
+        ),
+      ),
+      error ? h(Notice, { kind: "error", onDismiss: () => setError("") }, error) : null,
+      state === null
+        ? h(Empty, null, sessionId === "" ? "这个视图需要一个会话" : "加载中\u2026")
+        : h("div", { className: "smx-groups" },
+            h("section", { className: "smx-group smx-group--system" },
+              h("div", { className: "smx-group__head" },
+                h("div", { className: "smx-group__toggle" },
+                  h("span", { className: "smx-group__title" }, "MCP 服务器"),
+                  h("span", { className: "smx-group__count" }, mcp.length + " 个"),
+                ),
+              ),
+              mcp.length === 0
+                ? h(Empty, null, "能力库里没有可用的 MCP 服务器")
+                : h("ul", { className: "smx-tools smx-view__list" },
+                    mcp.map((item) => row("mcp", item, [item.transport, item.tier, item.toolCount + " 个工具"].filter(Boolean).join(" \u00b7 "))),
+                  ),
+            ),
+            h("section", { className: "smx-group smx-group--system" },
+              h("div", { className: "smx-group__head" },
+                h("div", { className: "smx-group__toggle" },
+                  h("span", { className: "smx-group__title" }, "技能"),
+                  h("span", { className: "smx-group__count" }, skills.length + " 个"),
+                ),
+              ),
+              skills.length === 0
+                ? h(Empty, null, "当前作用域没有技能")
+                : h("ul", { className: "smx-tools smx-view__list" },
+                    skills.map((item) => row("skills", item, [item.provider, item.readonly ? "只读" : ""].filter(Boolean).join(" \u00b7 "))),
+                  ),
+            ),
+          ),
+    );
+  }
+
   // ── sidebar page ─────────────────────────────────────────────────────────
   // The same manager, as a page of its own: the host's sidebar row selects the
   // `main` panel, so a click on 能力库 lands here instead of inside the settings
@@ -1310,6 +1412,12 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // top band for the frame; the body keeps a centered reading column and owns
     // its own scrolling.
     ".smx-page { display:flex; flex-direction:column; box-sizing:border-box; height:100%; min-height:0; padding-top:calc(28px + var(--dsh-frame-top-clearance,0px)); }",
+    // The conversation view: the host gives it the panel body, so it owns padding
+    // and scrolling like the page shell does.
+    ".smx-view { display:flex; flex-direction:column; gap:12px; box-sizing:border-box; height:100%; min-height:0; overflow:auto; padding:16px max(max(16px,min(4vw,48px)),50% - 480px) 24px; }",
+    ".smx-view__list { gap:6px; }",
+    ".smx-view__list .smx-tool { align-items:center; justify-content:space-between; gap:12px; padding:6px 8px; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; }",
+    ".smx-view__switch { display:flex; align-items:center; gap:6px; flex:none; }",
     ".smx-page__body { display:flex; flex-direction:column; flex:1; min-height:0; overflow:auto; padding-bottom:28px; padding-left:max(max(16px,min(4vw,48px)),50% - 480px); padding-right:max(max(16px,min(4vw,48px)),50% - 480px); }",
     ".smx-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }",
     ".smx-title { margin:0; font-size:15px; font-weight:600; color:var(--dsw-alias-label-primary); }",
@@ -1449,6 +1557,15 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // `shell.overlay` is a root-scope `list` slot rendered with no props inside
     // the frame's pointer-events:none layer, so the occupant positions itself
     // and everything around it stays click-through.
+    // A tab beside 轨迹 in the conversation's own view switcher. The host injects
+    // the session id; everything this view edits is scoped to that conversation.
+    ctx.slots.inject("conversation.view", () => ctx.slots.register({
+      name: "conversation.view",
+      id: "capability",
+      order: 11,
+      label: () => "能力管理",
+      inject: (sessionId) => ({ sessionId }),
+    }, CapabilityView));
     ctx.slots.inject("shell.overlay", () => ctx.slots.register({
       name: "shell.overlay",
       id: "capability-legacy-sessions",
