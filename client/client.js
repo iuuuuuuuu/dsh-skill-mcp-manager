@@ -1195,9 +1195,10 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       ),
       h(PluginSettings),
       h(LegacySessionBanner),
+      // MCP first: it is the default view and the reason this page exists.
       h("div", { className: "smx-tabs" },
-        h("button", { type: "button", className: cx("smx-tab", tab === "skills" && "is-active"), onClick: () => setTab("skills") }, "技能"),
         h("button", { type: "button", className: cx("smx-tab", tab === "mcp" && "is-active"), onClick: () => setTab("mcp") }, "MCP"),
+        h("button", { type: "button", className: cx("smx-tab", tab === "skills" && "is-active"), onClick: () => setTab("skills") }, "技能"),
       ),
       tab === "skills" ? h(SkillsPanel) : h(McpPanel),
     );
