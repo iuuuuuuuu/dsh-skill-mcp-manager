@@ -271,6 +271,11 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
     const [confirming, setConfirming] = useState("");
+    // Which groups are unfolded. A missing key means "the default": 系统 is open,
+    // every plugin group starts folded — a plugin's skills are the exception,
+    // not the list the user came for.
+    const [openGroups, setOpenGroups] = useState({});
+    const [busyGroup, setBusyGroup] = useState("");
 
     const refresh = useCallback(async () => {
       setLoading(true);
@@ -318,50 +323,142 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
 
+    // The group switch is one write per skill on the host; read-only (shipped)
+    // skills are reported back instead of being written, so a package we cannot
+    // touch never looks switched off.
+    async function toggleGroup(group, enabled) {
+      setBusyGroup(group.key);
+      try {
+        const data = await postJson("/skill-mcp-manager/skills/toggle-group", { provider: group.provider, enabled });
+        const updated = new Map((data.updated || []).map((item) => [item.name, item.modelInvocable]));
+        setSkills((current) => current && current.map((item) =>
+          updated.has(item.name) ? { ...item, modelInvocable: updated.get(item.name) } : item));
+        const skipped = (data.skipped || []).length;
+        setNotice("已" + (enabled ? "开启 " : "关闭 ") + group.title + " 下的 " + updated.size + " 个技能"
+          + (skipped > 0 ? "（" + skipped + " 个随包只读，未改动）" : ""));
+      } catch (err) {
+        setError(errText(err));
+      } finally {
+        setBusyGroup("");
+      }
+    }
+
     function mark(skill) {
       const letters = skill.name.replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase();
       return letters === "" ? "\u00b7\u00b7" : letters;
     }
 
-    const cards = (skills || []).map((skill) => h("article", {
-      key: skill.name,
-      className: cx("smx-card", skill.readonly && "is-readonly", !skill.modelInvocable && "is-dimmed"),
-    },
-      h("div", { className: "smx-card__head" },
-        h("span", { className: "smx-mark" }, mark(skill)),
-        h("div", { className: "smx-card__ident" },
-          h("span", { className: "smx-card__name", title: skill.name }, skill.name),
-          h("span", { className: "smx-card__sub", title: skill.path }, skill.path),
+    function skillCard(skill) {
+      return h("article", {
+        key: skill.name,
+        className: cx("smx-card", skill.readonly && "is-readonly", !skill.modelInvocable && "is-dimmed"),
+      },
+        h("div", { className: "smx-card__head" },
+          h("span", { className: "smx-mark" }, mark(skill)),
+          h("div", { className: "smx-card__ident" },
+            h("span", { className: "smx-card__name", title: skill.name }, skill.name),
+            h("span", { className: "smx-card__sub", title: skill.path }, skill.path),
+          ),
+          skill.readonly ? h(Badge, { tone: "muted" }, "只读") : null,
         ),
-        skill.readonly ? h(Badge, { tone: "muted" }, "只读") : null,
-      ),
-      h("p", { className: cx("smx-card__desc", !skill.description && "is-empty") },
-        skill.description ? skill.description : "这个技能没有写描述"),
-      h("div", { className: "smx-card__foot" },
-        skill.readonly
-          ? h("span", { className: "smx-card__hint" }, "shipped 技能，只能查看")
-          : h("label", { className: "smx-switchline" },
-              h(Switch, { checked: skill.modelInvocable, onChange: () => toggle(skill) }),
-              h("span", { className: "smx-switchline__label" }, skill.modelInvocable ? "模型可见" : "模型隐藏"),
-            ),
-        h("div", { className: "smx-card__actions" },
-          h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => open(skill) }, "打开"),
+        h("p", { className: cx("smx-card__desc", !skill.description && "is-empty") },
+          skill.description ? skill.description : "这个技能没有写描述"),
+        h("div", { className: "smx-card__foot" },
           skill.readonly
-            ? null
-            : confirming === skill.name
-              ? h("span", { className: "smx-confirm" },
-                  h("button", { type: "button", className: "smx-btn smx-btn--danger", onClick: () => remove(skill) }, "确认删除整个文件夹"),
-                  h("button", { type: "button", className: "smx-btn", onClick: () => setConfirming("") }, "取消"),
-                )
-              : h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => setConfirming(skill.name) }, "删除"),
+            ? h("span", { className: "smx-card__hint" }, "shipped 技能，只能查看")
+            : h("label", { className: "smx-switchline" },
+                h(Switch, { checked: skill.modelInvocable, onChange: () => toggle(skill) }),
+                h("span", { className: "smx-switchline__label" }, skill.modelInvocable ? "模型可见" : "模型隐藏"),
+              ),
+          h("div", { className: "smx-card__actions" },
+            h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => open(skill) }, "打开"),
+            skill.readonly
+              ? null
+              : confirming === skill.name
+                ? h("span", { className: "smx-confirm" },
+                    h("button", { type: "button", className: "smx-btn smx-btn--danger", onClick: () => remove(skill) }, "确认删除整个文件夹"),
+                    h("button", { type: "button", className: "smx-btn", onClick: () => setConfirming("") }, "取消"),
+                  )
+                : h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => setConfirming(skill.name) }, "删除"),
+          ),
         ),
-      ),
-    ));
+      );
+    }
+
+    // The host decides the group (provider name); the client only orders them and
+    // remembers which are folded.
+    const groups = [];
+    {
+      const byKey = new Map();
+      for (const skill of skills || []) {
+        const origin = skill.origin || { kind: "system", key: "system", label: "系统", provider: "", package: null, runtime: false };
+        let group = byKey.get(origin.key);
+        if (group === undefined) {
+          group = {
+            key: origin.key,
+            kind: origin.kind || "system",
+            label: origin.label || origin.key,
+            provider: origin.provider || "",
+            title: origin.kind === "plugin" ? "插件 \u00b7 " + (origin.package || origin.label || origin.key) : "系统",
+            packageName: origin.package || null,
+            runtime: origin.runtime === true,
+            skills: [],
+          };
+          byKey.set(origin.key, group);
+          groups.push(group);
+        }
+        group.skills.push(skill);
+      }
+      groups.sort((a, b) => (a.kind === b.kind ? String(a.label).localeCompare(String(b.label)) : a.kind === "system" ? -1 : 1));
+    }
+
+    const sections = groups.map((group) => {
+      const unfolded = openGroups[group.key] !== undefined ? openGroups[group.key] : group.kind === "system";
+      const writable = group.skills.filter((skill) => !skill.readonly);
+      const enabled = group.skills.filter((skill) => skill.modelInvocable).length;
+      return h("section", { key: group.key, className: cx("smx-group", "smx-group--" + group.kind) },
+        h("div", { className: "smx-group__head" },
+          h("button", {
+            type: "button",
+            className: "smx-group__toggle",
+            "aria-expanded": unfolded ? "true" : "false",
+            onClick: () => setOpenGroups((current) => ({ ...current, [group.key]: !unfolded })),
+          },
+            h("span", { className: cx("smx-group__chevron", unfolded && "is-open") }, "\u25b8"),
+            h("span", { className: "smx-group__title" }, group.title),
+            h("span", { className: "smx-group__count" }, group.skills.length + " 个 \u00b7 开启 " + enabled),
+            group.kind !== "system" && group.packageName && group.packageName !== group.label
+              ? h("span", { className: "smx-group__sub" }, group.label)
+              : null,
+            group.runtime ? h(Badge, { tone: "muted" }, "运行时生成") : null,
+          ),
+          group.kind === "system"
+            ? null
+            : h("span", { className: "smx-group__switch" },
+                h(Switch, {
+                  checked: enabled > 0,
+                  disabled: busyGroup === group.key || writable.length === 0,
+                  onChange: (next) => toggleGroup(group, next),
+                }),
+                h("span", { className: "smx-switchline__label" },
+                  writable.length === 0
+                    ? "随包只读"
+                    : enabled === 0
+                      ? "全部关闭"
+                      : enabled === group.skills.length
+                        ? "全部开启"
+                        : "部分开启"),
+              ),
+        ),
+        unfolded ? h("div", { className: "smx-cards" }, group.skills.map(skillCard)) : null,
+      );
+    });
 
     return h("div", { className: "smx" },
       h("div", { className: "smx-head" },
         h("span", { className: "smx-count" }, skills
           ? String(skills.length) + " 个技能 \u00b7 模型可见 " + skills.filter((s) => s.modelInvocable).length + " 个"
+            + (groups.length > 1 ? " \u00b7 " + (groups.length - 1) + " 个插件分组" : "")
           : ""),
         h("button", { type: "button", className: "smx-btn", onClick: refresh }, "刷新"),
       ),
@@ -369,7 +466,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       error ? h(Notice, { kind: "error", onDismiss: () => setError("") }, error) : null,
       loading ? h(Empty, null, "加载中\u2026")
         : skills && skills.length === 0 ? h(Empty, null, "没有可管理的技能（bundle 型 SKILL.md）")
-        : h("div", { className: "smx-cards" }, cards),
+        : h("div", { className: "smx-groups" }, sections),
     );
   }
 
@@ -981,6 +1078,19 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-btn--danger { border-color:var(--dsw-alias-state-error-primary); color:var(--dsw-alias-state-error-primary); }",
     ".smx-btn--primary { border-color:var(--dsw-alias-brand-primary); color:var(--dsw-alias-brand-primary); }",
     ".smx-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:10px; align-items:stretch; }",
+    // Groups: one header row per origin. The plugin groups start folded and own a
+    // master switch; 系统 has neither, because it is the list itself.
+    ".smx-groups { display:flex; flex-direction:column; gap:14px; }",
+    ".smx-group { display:flex; flex-direction:column; gap:8px; min-width:0; }",
+    ".smx-group__head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 8px; border:1px solid var(--dsw-alias-border-l1); border-radius:10px; background:var(--dsw-alias-bg-layer-2); }",
+    ".smx-group--system > .smx-group__head { background:transparent; }",
+    ".smx-group__toggle { display:flex; align-items:center; gap:8px; flex:1; min-width:0; padding:0; border:none; background:none; color:inherit; cursor:pointer; text-align:left; }",
+    ".smx-group__chevron { display:inline-block; flex:none; font-size:10px; color:var(--dsw-alias-label-secondary); transition:transform .12s ease; }",
+    ".smx-group__chevron.is-open { transform:rotate(90deg); }",
+    ".smx-group__title { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-group__count { flex:none; font-size:11px; color:var(--dsw-alias-label-secondary); }",
+    ".smx-group__sub { font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-group__switch { display:flex; align-items:center; gap:6px; flex:none; }",
     ".smx-card { display:flex; flex-direction:column; gap:8px; min-width:0; padding:12px; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); transition:border-color .12s ease, box-shadow .12s ease; }",
     ".smx-card:hover { border-color:var(--dsw-alias-border-l2); box-shadow:0 2px 12px rgba(0,0,0,.07); }",
     ".smx-card.is-readonly { border-style:dashed; }",

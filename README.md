@@ -18,7 +18,11 @@ SKILL management
 
 Which Skills **and** MCPs are installed? Are they enabled? What does each one do? All visible directly in the settings page — **no digging through layers**. Skills and MCPs render as cards: name, path/transport, tool count, tier and current status at a glance, with the actions belonging to that card. Long content (env, headers, the tool list) moved into a side detail drawer instead of stretching the list into a wall. Enable/disable and delete MCPs and Skills from the UI, and click a SKILL to view its source (opens with your local default markdown reader). Each MCP tool can also be enabled or disabled independently; a disabled tool cannot be called by the AI and does not affect other tools on the same server.
 
-### 1.1 Sidebar entry
+### 1.1 Skills grouped by origin
+
+The skills page groups by who provides the skill: a 「系统」 group for your own directories (`~/.dsh/skills`, `~/.agents/skills`, extra recursive dirs), and one group per **plugin** (titled with the package name, e.g. “插件 · @iuuuuuuuu/agent-notes”). Plugin groups start folded and carry a master switch: turning it off writes `disable-model-invocation` to every skill that plugin provides, turning it back on restores them exactly; shipped/read-only skills are never written and are reported as skipped.
+
+### 1.2 Sidebar entry
 
 The capability library is not settings-only: the sidebar gets a “能力库” row (right under Plugins), and one click opens the same card UI as a full page in the main area — no settings dialog needed. Hosts that predate that seat simply do not show the row, and the settings entry keeps working.
 

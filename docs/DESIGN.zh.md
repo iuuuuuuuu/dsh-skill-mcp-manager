@@ -95,7 +95,8 @@ tmp/               # 插件内部临时文件（AI 不直接引用；无 args_fi
 
 ### 4.2 展示与编辑（已定，简化为系统编辑器）
 
-- **SKILL 管理抽屉**：列出所有 SKILL 的 **名字 / 描述 / 路径**，**按路径排序**（路径天然携带分组与递归层级信息，不做来源分组树、不显示"递归"标记）。
+  - **分组**：按来源分「系统」+ 每个插件一组。`provider` 是唯一判据（`filesystem` / `skill-mcp-manager-recursive` → 系统；其余 → 插件），路径只用来认包名（先查 `node_modules` / `app.asar` 段，再向上找最近的 `package.json`，且要求技能在 `<pkg>/skills/` 下，避免把用户仓库的 package.json 当成归属）。插件组默认折叠；组头总开关调用 `POST /skills/toggle-group`，把该 `provider` 下所有**可写**技能一次写成 `disable-model-invocation: true`，随包只读的跳过并在回执里列出（`skipped`），全组只读时开关置灰。
+- **SKILL 管理抽屉**：列出所有 SKILL 的 **名字 / 描述 / 路径**（组内仍按路径排序）。
 - **点击条目 → 用系统自带编辑器打开对应文件**（Host 侧 shell 打开：Windows `start`、macOS `open`、Linux `xdg-open`；走 `ctx.shell`/受限子进程）。**不做内置 md 阅读器/编辑器**（后期迭代）。
 - 启停 Switch 仍内嵌在列表行（写 frontmatter，不需要打开编辑器）；修改正文则走系统编辑器。
 
