@@ -260,6 +260,9 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
   }
 
   // ── Skills panel ─────────────────────────────────────────────────────────
+  // Cards, not rows. Each skill is one self-contained tile: its identity, its
+  // path and whether the model can see it are readable without reading across a
+  // table, and the actions belong to the tile they act on.
   function SkillsPanel() {
     const [skills, setSkills] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -313,38 +316,50 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
 
-    const rows = (skills || []).map((skill) => h("li", { key: skill.name, className: "smx-row" },
-      h("div", { className: "smx-row__main" },
-        h("div", { className: "smx-row__top" },
-          h("span", { className: "smx-row__name" }, skill.name),
-          skill.readonly ? h(Badge, { tone: "muted" }, "只读") : null,
-          h("span", { className: "smx-row__path" }, skill.path),
+    function mark(skill) {
+      const letters = skill.name.replace(/[^A-Za-z0-9]/g, "").slice(0, 2).toUpperCase();
+      return letters === "" ? "\u00b7\u00b7" : letters;
+    }
+
+    const cards = (skills || []).map((skill) => h("article", {
+      key: skill.name,
+      className: cx("smx-card", skill.readonly && "is-readonly", !skill.modelInvocable && "is-dimmed"),
+    },
+      h("div", { className: "smx-card__head" },
+        h("span", { className: "smx-mark" }, mark(skill)),
+        h("div", { className: "smx-card__ident" },
+          h("span", { className: "smx-card__name", title: skill.name }, skill.name),
+          h("span", { className: "smx-card__sub", title: skill.path }, skill.path),
         ),
-        skill.description ? h("div", { className: "smx-row__desc" }, skill.description) : null,
+        skill.readonly ? h(Badge, { tone: "muted" }, "只读") : null,
       ),
-      h("div", { className: "smx-row__actions" },
+      h("p", { className: cx("smx-card__desc", !skill.description && "is-empty") },
+        skill.description ? skill.description : "这个技能没有写描述"),
+      h("div", { className: "smx-card__foot" },
         skill.readonly
-          ? h("span", { className: "smx-switchline__label" }, "只读（不可启停）")
+          ? h("span", { className: "smx-card__hint" }, "shipped 技能，只能查看")
           : h("label", { className: "smx-switchline" },
               h(Switch, { checked: skill.modelInvocable, onChange: () => toggle(skill) }),
               h("span", { className: "smx-switchline__label" }, skill.modelInvocable ? "模型可见" : "模型隐藏"),
             ),
-        h("button", { type: "button", className: "smx-btn", onClick: () => open(skill) }, "打开"),
-        skill.readonly
-          ? null
-          : confirming === skill.name
-            ? h("span", { className: "smx-confirm" },
-                h("button", { type: "button", className: "smx-btn smx-btn--danger", onClick: () => remove(skill) }, "确认删除整个文件夹"),
-                h("button", { type: "button", className: "smx-btn", onClick: () => setConfirming("") }, "取消"),
-              )
-            : h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => setConfirming(skill.name) }, "删除"),
+        h("div", { className: "smx-card__actions" },
+          h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => open(skill) }, "打开"),
+          skill.readonly
+            ? null
+            : confirming === skill.name
+              ? h("span", { className: "smx-confirm" },
+                  h("button", { type: "button", className: "smx-btn smx-btn--danger", onClick: () => remove(skill) }, "确认删除整个文件夹"),
+                  h("button", { type: "button", className: "smx-btn", onClick: () => setConfirming("") }, "取消"),
+                )
+              : h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => setConfirming(skill.name) }, "删除"),
+        ),
       ),
     ));
 
     return h("div", { className: "smx" },
       h("div", { className: "smx-head" },
         h("span", { className: "smx-count" }, skills
-          ? String(skills.length) + " 个技能 · 模型可见 " + skills.filter((s) => s.modelInvocable).length + " 个"
+          ? String(skills.length) + " 个技能 \u00b7 模型可见 " + skills.filter((s) => s.modelInvocable).length + " 个"
           : ""),
         h("button", { type: "button", className: "smx-btn", onClick: refresh }, "刷新"),
       ),
@@ -352,14 +367,37 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       error ? h(Notice, { kind: "error", onDismiss: () => setError("") }, error) : null,
       loading ? h(Empty, null, "加载中\u2026")
         : skills && skills.length === 0 ? h(Empty, null, "没有可管理的技能（bundle 型 SKILL.md）")
-        : h("ul", { className: "smx-list" }, rows),
+        : h("div", { className: "smx-cards" }, cards),
     );
   }
 
   // ── MCP panel ────────────────────────────────────────────────────────────
+  // One card per server. The card answers three questions without opening
+  // anything: what tier is it, does it still connect, and how many tools does it
+  // expose. Details (env/headers/tools/instructions) moved into a side drawer so
+  // a long config cannot stretch a tile across the grid.
   const TIERS = ["eager", "on-demand", "disabled"];
   const TIER_LABEL = { "eager": "常驻", "on-demand": "按需", "disabled": "关闭" };
   const TIER_TONE = { "eager": "success", "on-demand": "info", "disabled": "muted" };
+  // A card click must not start ten stdio processes at once; three at a time is
+  // fast enough to feel like one action and gentle enough not to stall a host.
+  const CHECK_CONCURRENCY = 3;
+
+  function formatMs(value) {
+    if (typeof value !== "number" || !Number.isFinite(value)) return "\u2014";
+    return value < 1000 ? Math.round(value) + " ms" : (value / 1000).toFixed(1) + " s";
+  }
+
+  function relativeTime(iso) {
+    if (typeof iso !== "string" || iso === "") return "";
+    const at = Date.parse(iso);
+    if (!Number.isFinite(at)) return "";
+    const delta = Date.now() - at;
+    if (delta < 60000) return "刚刚";
+    if (delta < 3600000) return Math.floor(delta / 60000) + " 分钟前";
+    if (delta < 86400000) return Math.floor(delta / 3600000) + " 小时前";
+    return Math.floor(delta / 86400000) + " 天前";
+  }
 
   function McpPanel() {
     const [entries, setEntries] = useState(null);
@@ -370,10 +408,14 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [detail, setDetail] = useState("");
     const [confirming, setConfirming] = useState("");
     const [output, setOutput] = useState("");
+    const [checks, setChecks] = useState({});
+    const [progress, setProgress] = useState({ done: 0, total: 0 });
+    const [testingAll, setTestingAll] = useState(false);
     const [toolDescMax, setToolDescMax] = useState(150);
     const [toolDescDraft, setToolDescDraft] = useState("150");
     const [bufferMb, setBufferMb] = useState(null);
     const [bufferDraft, setBufferDraft] = useState("");
+    const [advanced, setAdvanced] = useState(false);
 
     const refresh = useCallback(async (rv) => {
       setLoading(true);
@@ -410,7 +452,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     async function saveToolDesc() {
       const value = Number(toolDescDraft);
       if (!Number.isInteger(value) || value <= 0 || value > 5000) {
-        setError("工具描述截断必须是 1–5000 的正整数");
+        setError("工具描述截断必须是 1\u20135000 的正整数");
         return;
       }
       try {
@@ -491,10 +533,83 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         await postJson("/skill-mcp-manager/mcp/delete", { name: entry.name });
         setNotice("已删除 " + entry.name);
         setDetail("");
+        setOutput("");
         await refresh(reveal);
       } catch (err) {
         setError(errText(err));
       }
+    }
+
+    // A check is a real handshake on a short timeout, so the answer is what the
+    // server just said — not what a snapshot from weeks ago claims.
+    async function checkOne(entry) {
+      setChecks((current) => ({ ...current, [entry.name]: { status: "running" } }));
+      try {
+        const data = await postJson("/skill-mcp-manager/mcp/test", { name: entry.name });
+        const check = data.check || {};
+        setChecks((current) => ({
+          ...current,
+          [entry.name]: {
+            status: check.ok === true ? "ok" : "fail",
+            latencyMs: check.latencyMs,
+            toolCount: check.toolCount,
+            toolsDiffer: check.toolsDiffer === true,
+            error: check.error,
+            at: check.at,
+          },
+        }));
+      } catch (err) {
+        setChecks((current) => ({ ...current, [entry.name]: { status: "fail", error: errText(err) } }));
+      }
+    }
+
+    async function checkAll() {
+      const list = entries || [];
+      if (list.length === 0 || testingAll) return;
+      setTestingAll(true);
+      setProgress({ done: 0, total: list.length });
+      const queue = list.slice();
+      const worker = async () => {
+        for (;;) {
+          const entry = queue.shift();
+          if (entry === undefined) return;
+          await checkOne(entry);
+          setProgress((current) => ({ ...current, done: current.done + 1 }));
+        }
+      };
+      await Promise.all(Array.from({ length: Math.min(CHECK_CONCURRENCY, list.length) }, worker));
+      setTestingAll(false);
+      await refresh(reveal);
+    }
+
+    function statusOf(entry) {
+      const live = checks[entry.name];
+      if (live !== undefined && live.status === "running") return { tone: "busy", label: "检测中\u2026" };
+      if (live !== undefined && live.status === "ok") {
+        return {
+          tone: "ok",
+          label: "连通 \u00b7 " + formatMs(live.latencyMs)
+            + (typeof live.toolCount === "number" ? " \u00b7 " + live.toolCount + " 个工具" : ""),
+        };
+      }
+      if (live !== undefined && live.status === "fail") return { tone: "fail", label: "连接失败" };
+      const last = entry.lastCheck;
+      if (last !== null && last !== undefined) {
+        return last.ok
+          ? { tone: "ok", label: "上次连通 \u00b7 " + formatMs(last.latencyMs) + " \u00b7 " + relativeTime(last.at) }
+          : { tone: "fail", label: "上次失败 \u00b7 " + relativeTime(last.at) };
+      }
+      return { tone: "idle", label: "未检测" };
+    }
+
+    // The freshest failure is what a person needs to read; an old one only shows
+    // when nothing newer has been asked for.
+    function failureOf(entry) {
+      const live = checks[entry.name];
+      if (live !== undefined && live.status === "fail" && live.error) return String(live.error);
+      const last = entry.lastCheck;
+      if (live === undefined && last !== null && last !== undefined && last.ok === false && last.error) return String(last.error);
+      return "";
     }
 
     function envRows(entry) {
@@ -546,6 +661,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     }
 
     function detailBlock(entry) {
+      const last = entry.lastCheck;
       return h("div", { className: "smx-detail" },
         h("div", { className: "smx-detail__section" },
           h("div", { className: "smx-detail__label" }, "档位"),
@@ -556,6 +672,9 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
           }, TIERS.map((t) => h("option", { key: t, value: t }, TIER_LABEL[t] + " (" + t + ")"))),
         ),
         kv("传输", entry.transport),
+        last !== null && last !== undefined
+          ? kv("上次检测", (last.ok ? "连通" : "失败") + " \u00b7 " + formatMs(last.latencyMs) + " \u00b7 " + relativeTime(last.at))
+          : kv("上次检测", "未检测"),
         entry.serverDescription ? kv("描述", entry.serverDescription) : null,
         entry.serverName ? kv("服务器自报名", entry.serverName) : null,
         entry.serverVersion ? kv("版本", entry.serverVersion) : null,
@@ -572,6 +691,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         headerRows(entry),
         toolsSection(entry),
         h("div", { className: "smx-detail__actions" },
+          h("button", { type: "button", className: "smx-btn", onClick: () => checkOne(entry) }, "检测连接"),
           h("button", { type: "button", className: "smx-btn", onClick: () => run(entry, true) }, "查看描述"),
           h("button", { type: "button", className: "smx-btn", onClick: () => run(entry, false) }, "刷新快照"),
         ),
@@ -579,21 +699,46 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       );
     }
 
-    const rows = (entries || []).map((entry) => {
-      const isOpen = detail === entry.name;
-      return h("li", { key: entry.name, className: "smx-row smx-row--col" },
-        h("div", { className: "smx-row__main" },
-          h("div", { className: "smx-row__top" },
-            h("span", { className: "smx-row__name" }, entry.name),
-            h(Badge, { tone: TIER_TONE[entry.tier] || "muted" }, TIER_LABEL[entry.tier] || entry.tier),
-            entry.connectFailed ? h(Badge, { tone: "muted" }, "连接失败，按按需处理") : null,
-            entry.transport ? h("span", { className: "smx-row__meta" }, entry.transport) : null,
-            h("span", { className: "smx-row__meta" }, entry.toolCount + " 工具"),
+    const cards = (entries || []).map((entry) => {
+      const state = statusOf(entry);
+      const failure = failureOf(entry);
+      const live = checks[entry.name];
+      const running = live !== undefined && live.status === "running";
+      const differs = (live !== undefined && live.toolsDiffer === true)
+        || (live === undefined && entry.lastCheck !== null && entry.lastCheck !== undefined && entry.lastCheck.toolsDiffer === true);
+      return h("article", { key: entry.name, className: "smx-card" },
+        h("div", { className: "smx-card__head" },
+          h("span", { className: cx("smx-dot", "smx-dot--" + state.tone), title: state.label }),
+          h("div", { className: "smx-card__ident" },
+            h("span", { className: "smx-card__name", title: entry.name }, entry.name),
+            h("span", { className: "smx-card__sub" },
+              (entry.transport || "?") + " \u00b7 " + entry.toolCount + " 个工具"),
           ),
-          entry.serverDescription ? h("div", { className: "smx-row__desc" }, entry.serverDescription) : null,
+          h("select", {
+            className: "smx-select smx-select--tight",
+            value: entry.tier,
+            "aria-label": entry.name + " 档位",
+            onChange: (e) => setTier(entry, e.target.value),
+          }, TIERS.map((t) => h("option", { key: t, value: t }, TIER_LABEL[t]))),
         ),
-        h("div", { className: "smx-row__actions" },
-          h("button", { type: "button", className: "smx-btn", onClick: () => setDetail(isOpen ? "" : entry.name) }, isOpen ? "收起" : "详情"),
+        h("p", { className: cx("smx-card__desc", !entry.serverDescription && "is-empty") },
+          entry.serverDescription ? entry.serverDescription : "服务器未提供描述"),
+        h("div", { className: "smx-card__status" },
+          h("span", null, state.label),
+          entry.connectFailed ? h(Badge, { tone: "muted" }, "常驻启动失败") : null,
+          differs ? h("span", { className: "smx-card__hint" }, "工具已变化，建议刷新快照") : null,
+        ),
+        failure ? h("div", { className: "smx-card__error", title: failure }, failure) : null,
+        h("div", { className: "smx-card__foot" },
+          h("div", { className: "smx-card__actions" },
+            h("button", {
+              type: "button",
+              className: "smx-btn smx-btn--primary",
+              disabled: running,
+              onClick: () => checkOne(entry),
+            }, running ? "检测中\u2026" : "检测"),
+            h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => { setOutput(""); setDetail(entry.name); } }, "详情"),
+          ),
           confirming === entry.name
             ? h("span", { className: "smx-confirm" },
                 h("button", { type: "button", className: "smx-btn smx-btn--danger", onClick: () => remove(entry) }, "确认删除条目"),
@@ -601,50 +746,103 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               )
             : h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => setConfirming(entry.name) }, "删除"),
         ),
-        isOpen ? detailBlock(entry) : null,
       );
     });
 
+    // One outcome per server: the fresh answer wins over the recorded one, and a
+    // running probe counts as neither — otherwise the header would claim a
+    // result before the server has said anything.
+    const outcomes = (entries || []).map((entry) => {
+      const live = checks[entry.name];
+      if (live !== undefined) {
+        if (live.status === "ok") return "ok";
+        if (live.status === "fail") return "fail";
+        return "busy";
+      }
+      const last = entry.lastCheck;
+      if (last === null || last === undefined) return "none";
+      return last.ok === true ? "ok" : "fail";
+    });
+    const okCount = outcomes.filter((outcome) => outcome === "ok").length;
+    const failCount = outcomes.filter((outcome) => outcome === "fail").length;
+    const busyCount = outcomes.filter((outcome) => outcome === "busy").length;
+    const opened = (entries || []).find((entry) => entry.name === detail);
+
     return h("div", { className: "smx" },
       h("div", { className: "smx-head" },
-        h("span", { className: "smx-count" }, entries ? String(entries.length) + " 个服务器" : ""),
+        h("span", { className: "smx-count" }, entries
+          ? String(entries.length) + " 个服务器 \u00b7 连通 " + okCount + " \u00b7 失败 " + failCount
+            + (busyCount > 0 ? " \u00b7 检测中 " + busyCount : "")
+            + " \u00b7 未检测 " + outcomes.filter((outcome) => outcome === "none").length
+          : ""),
         h("div", { className: "smx-head__meta" },
+          h("button", {
+            type: "button",
+            className: "smx-btn smx-btn--primary",
+            disabled: testingAll || !entries || entries.length === 0,
+            onClick: checkAll,
+          }, testingAll ? "检测中 " + progress.done + "/" + progress.total : "全部检测"),
           h("button", { type: "button", className: "smx-btn", onClick: toggleReveal }, reveal ? "隐藏密钥" : "显示密钥"),
           h("button", { type: "button", className: "smx-btn", onClick: () => refresh(reveal) }, "刷新"),
         ),
       ),
-      h("div", { className: "smx-setting" },
-        h("span", { className: "smx-setting__label" }, "工具描述截断（字符）"),
-        h("input", {
-          type: "number",
-          className: "smx-input",
-          value: toolDescDraft,
-          min: 1,
-          max: 5000,
-          onChange: (e) => setToolDescDraft(e.target.value),
-        }),
-        h("button", { type: "button", className: "smx-btn", onClick: saveToolDesc }, "保存"),
-        h("span", { className: "smx-count" }, "当前 " + toolDescMax),
-      ),
-      h("div", { className: "smx-setting" },
-        h("span", { className: "smx-setting__label" }, "stdio 消息上限（MB）"),
-        h("input", {
-          type: "number",
-          className: "smx-input",
-          value: bufferDraft,
-          min: 1,
-          placeholder: "SDK 默认 10",
-          onChange: (e) => setBufferDraft(e.target.value),
-        }),
-        h("button", { type: "button", className: "smx-btn", onClick: saveBufferMb }, "保存"),
-        h("span", { className: "smx-count" },
-          bufferMb === null ? "当前 SDK 默认 10 MB；超出上限的消息会被丢弃并报错，连接不断开" : "当前 " + bufferMb + " MB"),
+      h("div", { className: "smx-settings-card" },
+        h("button", {
+          type: "button",
+          className: "smx-settings-card__toggle",
+          onClick: () => setAdvanced(!advanced),
+        },
+          h("span", { className: "smx-settings-card__title" }, "高级设置"),
+          h("span", { className: "smx-count" }, advanced ? "收起" : "展开"),
+        ),
+        advanced ? h("div", { className: "smx-settings-card__body" },
+        h("div", { className: "smx-setting__row" },
+          h("span", { className: "smx-setting__label" }, "工具描述截断（字符）"),
+          h("input", {
+            type: "number",
+            className: "smx-input",
+            value: toolDescDraft,
+            min: 1,
+            max: 5000,
+            onChange: (e) => setToolDescDraft(e.target.value),
+          }),
+          h("button", { type: "button", className: "smx-btn", onClick: saveToolDesc }, "保存"),
+          h("span", { className: "smx-count" }, "当前 " + toolDescMax),
+        ),
+        h("div", { className: "smx-setting__row" },
+          h("span", { className: "smx-setting__label" }, "stdio 消息上限（MB）"),
+          h("input", {
+            type: "number",
+            className: "smx-input",
+            value: bufferDraft,
+            min: 1,
+            placeholder: "SDK 默认 10",
+            onChange: (e) => setBufferDraft(e.target.value),
+          }),
+          h("button", { type: "button", className: "smx-btn", onClick: saveBufferMb }, "保存"),
+          h("span", { className: "smx-count" },
+            bufferMb === null ? "当前 SDK 默认 10 MB；超出上限的消息会被丢弃并报错，连接不断开" : "当前 " + bufferMb + " MB"),
+        ),
+        ) : null,
       ),
       notice ? h(Notice, { kind: "success", onDismiss: () => setNotice("") }, notice) : null,
       error ? h(Notice, { kind: "error", onDismiss: () => setError("") }, error) : null,
       loading ? h(Empty, null, "加载中\u2026")
         : entries && entries.length === 0 ? h(Empty, null, "没有已注册的 MCP 服务器")
-        : h("ul", { className: "smx-list" }, rows),
+        : h("div", { className: "smx-cards" }, cards),
+      opened
+        ? h("div", { className: "smx-drawer", role: "dialog", "aria-label": opened.name + " 详情" },
+            h("div", { className: "smx-drawer__scrim", onClick: () => { setDetail(""); setOutput(""); } }),
+            h("div", { className: "smx-drawer__panel" },
+              h("div", { className: "smx-drawer__head" },
+                h("span", { className: "smx-drawer__title" }, opened.name),
+                h(Badge, { tone: TIER_TONE[opened.tier] || "muted" }, TIER_LABEL[opened.tier] || opened.tier),
+                h("button", { type: "button", className: "smx-btn", onClick: () => { setDetail(""); setOutput(""); } }, "关闭"),
+              ),
+              detailBlock(opened),
+            ),
+          )
+        : null,
     );
   }
 
@@ -729,12 +927,12 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
   // ── CSS ──────────────────────────────────────────────────────────────────
   const CSS = [
     ".smx { display:flex; flex-direction:column; gap:12px; min-width:0; }",
-    ".smx-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }",
+    ".smx-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }",
     ".smx-title { margin:0; font-size:15px; font-weight:600; color:var(--dsw-alias-label-primary); }",
-    ".smx-head__meta { display:flex; align-items:center; gap:8px; }",
+    ".smx-head__meta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }",
     ".smx-setting { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-bg-layer-1); }",
     ".smx-setting--block { flex-direction:column; align-items:stretch; gap:10px; }",
-    ".smx-setting__row { display:flex; align-items:center; gap:8px; min-width:0; }",
+    ".smx-setting__row { display:flex; align-items:center; gap:8px; min-width:0; flex-wrap:wrap; }",
     ".smx-setting__save { display:flex; justify-content:flex-end; align-items:center; gap:8px; }",
     ".smx-setting__label { flex:none; white-space:nowrap; font-size:12px; color:var(--dsw-alias-label-secondary); }",
     ".smx-input { font-size:12px; padding:5px 8px; border-radius:6px; border:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); width:72px; }",
@@ -742,18 +940,42 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-count { font-size:12px; color:var(--dsw-alias-label-secondary); }",
     ".smx-btn { font-size:12px; line-height:1; padding:6px 10px; border-radius:6px; border:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); cursor:pointer; }",
     ".smx-btn:hover { border-color:var(--dsw-alias-brand-primary); color:var(--dsw-alias-brand-primary); }",
+    ".smx-btn:disabled { opacity:.55; cursor:default; }",
+    ".smx-btn:disabled:hover { border-color:var(--dsw-alias-border-l2); color:var(--dsw-alias-label-primary); }",
     ".smx-btn--ghost { border-color:var(--dsw-alias-border-l1); color:var(--dsw-alias-label-secondary); }",
     ".smx-btn--danger { border-color:var(--dsw-alias-state-error-primary); color:var(--dsw-alias-state-error-primary); }",
-    ".smx-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }",
-    ".smx-row { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; padding:10px 12px; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-bg-layer-1); }",
-    ".smx-row--col { flex-direction:column; }",
-    ".smx-row__main { min-width:0; flex:1; }",
-    ".smx-row__top { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }",
-    ".smx-row__name { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); }",
-    ".smx-row__path { font-size:11px; color:var(--dsw-alias-label-secondary); word-break:break-all; }",
-    ".smx-row__meta { font-size:11px; color:var(--dsw-alias-label-secondary); }",
-    ".smx-row__desc { margin-top:4px; font-size:12px; color:var(--dsw-alias-label-secondary); }",
-    ".smx-row__actions { display:flex; align-items:center; gap:8px; flex-shrink:0; }",
+    ".smx-btn--primary { border-color:var(--dsw-alias-brand-primary); color:var(--dsw-alias-brand-primary); }",
+    ".smx-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:10px; align-items:stretch; }",
+    ".smx-card { display:flex; flex-direction:column; gap:8px; min-width:0; padding:12px; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); transition:border-color .12s ease, box-shadow .12s ease; }",
+    ".smx-card:hover { border-color:var(--dsw-alias-border-l2); box-shadow:0 2px 12px rgba(0,0,0,.07); }",
+    ".smx-card.is-readonly { border-style:dashed; }",
+    ".smx-card.is-dimmed .smx-card__name { color:var(--dsw-alias-label-secondary); }",
+    ".smx-card__head { display:flex; align-items:flex-start; gap:8px; min-width:0; }",
+    ".smx-mark { flex:none; display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; font-size:10px; font-weight:700; letter-spacing:.02em; color:var(--dsw-alias-brand-primary); background:var(--dsw-alias-bg-layer-2); border:1px solid var(--dsw-alias-border-l1); }",
+    ".smx-card__ident { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }",
+    ".smx-card__name { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-card__sub { font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-card__desc { margin:0; font-size:12px; line-height:1.5; color:var(--dsw-alias-label-secondary); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }",
+    ".smx-card__desc.is-empty { font-style:italic; }",
+    ".smx-card__status { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:11px; color:var(--dsw-alias-label-secondary); }",
+    ".smx-card__hint { font-size:11px; color:var(--dsw-alias-label-secondary); }",
+    ".smx-card__error { font-size:11px; line-height:1.45; color:var(--dsw-alias-state-error-primary); background:var(--dsw-alias-bg-layer-2); border-radius:6px; padding:6px 8px; max-height:76px; overflow:auto; word-break:break-word; }",
+    ".smx-card__foot { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:auto; padding-top:8px; border-top:1px solid var(--dsw-alias-border-l1); }",
+    ".smx-card__actions { display:flex; align-items:center; gap:6px; }",
+    ".smx-dot { flex:none; width:8px; height:8px; margin-top:6px; border-radius:50%; background:var(--dsw-alias-border-l2); }",
+    ".smx-dot--ok { background:var(--dsw-alias-state-success-primary); }",
+    ".smx-dot--fail { background:var(--dsw-alias-state-error-primary); }",
+    ".smx-dot--busy { background:var(--dsw-alias-brand-primary); animation:smx-pulse 1s ease-in-out infinite; }",
+    "@keyframes smx-pulse { 0%,100% { opacity:1; } 50% { opacity:.3; } }",
+    ".smx-settings-card { display:flex; flex-direction:column; gap:8px; padding:10px 12px; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); }",
+    ".smx-settings-card__title { font-size:12px; font-weight:600; color:var(--dsw-alias-label-secondary); }",
+    ".smx-settings-card__toggle { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; padding:0; border:none; background:none; cursor:pointer; }",
+    ".smx-settings-card__body { display:flex; flex-direction:column; gap:8px; }",
+    ".smx-drawer { position:fixed; inset:0; z-index:60; display:flex; justify-content:flex-end; }",
+    ".smx-drawer__scrim { position:absolute; inset:0; background:rgba(0,0,0,.28); }",
+    ".smx-drawer__panel { position:relative; display:flex; flex-direction:column; gap:10px; width:480px; max-width:92vw; height:100%; overflow:auto; padding:14px; background:var(--dsw-alias-bg-layer-1); border-left:1px solid var(--dsw-alias-border-l1); box-shadow:-8px 0 24px rgba(0,0,0,.16); }",
+    ".smx-drawer__head { display:flex; align-items:center; gap:8px; }",
+    ".smx-drawer__title { flex:1; font-size:14px; font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
     ".smx-switchline { display:flex; align-items:center; gap:6px; }",
     ".smx-switchline__label { font-size:12px; color:var(--dsw-alias-label-secondary); }",
     ".smx-switch { position:relative; width:30px; height:17px; border-radius:999px; border:none; background:var(--dsw-alias-border-l2); cursor:pointer; padding:0; flex-shrink:0; }",
@@ -773,8 +995,6 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-legacy__code { font-family:var(--ds-font-family-code); font-size:11px; padding:1px 4px; border-radius:4px; background:var(--dsw-alias-bg-layer-2); }",
     ".smx-legacy__link { color:var(--dsw-alias-brand-primary); }",
     ".smx-legacy__note { color:var(--dsw-alias-label-secondary); }",
-    // The shell overlay layer is a pointer-events:none frame-sized layer whose
-    // direct children stay interactive, so the toast sizes and anchors itself.
     ".smx-toast { position:absolute; right:16px; bottom:16px; display:flex; align-items:flex-start; gap:10px; max-width:360px; padding:10px 12px; border-radius:10px; border:1px solid var(--dsw-alias-state-error-primary); background:var(--dsw-alias-bg-layer-1); box-shadow:0 8px 28px rgba(0,0,0,.18); pointer-events:auto; }",
     ".smx-toast--checking { border-color:var(--dsw-alias-border-l2); }",
     ".smx-toast--ok { border-color:var(--dsw-alias-state-success-primary); }",
@@ -784,7 +1004,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-toast__close { border:none; background:none; color:var(--dsw-alias-label-secondary); cursor:pointer; font-size:15px; line-height:1; padding:0 2px; }",
     ".smx-empty { padding:18px; text-align:center; font-size:12px; color:var(--dsw-alias-label-secondary); }",
     ".smx-confirm { display:inline-flex; gap:6px; align-items:center; }",
-    ".smx-detail { display:flex; flex-direction:column; gap:8px; border-top:1px solid var(--dsw-alias-border-l1); padding-top:10px; }",
+    ".smx-detail { display:flex; flex-direction:column; gap:8px; }",
     ".smx-detail__section { display:flex; flex-direction:column; gap:4px; }",
     ".smx-detail__label { font-size:11px; font-weight:600; color:var(--dsw-alias-label-secondary); }",
     ".smx-detail__actions { display:flex; gap:8px; flex-wrap:wrap; }",
@@ -792,6 +1012,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-kv__k { flex-shrink:0; color:var(--dsw-alias-label-secondary); }",
     ".smx-kv__v { color:var(--dsw-alias-label-primary); word-break:break-all; }",
     ".smx-select { font-size:12px; padding:5px 8px; border-radius:6px; border:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); }",
+    ".smx-select--tight { flex:none; font-size:11px; padding:3px 6px; }",
     ".smx-tools { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:4px; }",
     ".smx-tool { display:flex; align-items:flex-start; gap:8px; font-size:12px; }",
     ".smx-tool__tier { flex-shrink:0; min-width:58px; font-size:11px; padding:2px 4px; border-radius:5px; border:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); }",

@@ -8,6 +8,7 @@
         dataDir: ''        # empty = ~/.dsh/skill-mcp-manager (or $DSH_HOME/skill-mcp-manager)
         profile: web       # profile whose cordis.patch.yml this plugin reconciles against
         trialTimeoutMs: 30000
+        checkTimeoutMs: 15000  # management-page "检测" timeout (shorter than a trial connect: a person is waiting)
         toolCallTimeoutMs: 60000
         catalogDescriptionMaxLength: 500
         toolDescriptionMaxLength: 150  # per-tool description truncation in the catalog

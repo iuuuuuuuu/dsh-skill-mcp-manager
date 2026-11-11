@@ -68,7 +68,7 @@ plugin: skill-mcp-manager
 ### 3.3 数据存储（`~/.dsh/skill-mcp-manager/`，JSON）
 
 ```
-registry.json      # MCP 注册表（权威）
+registry.json      # MCP 注册表（权威；条目含最后一次连接检测记录 lastCheck）
 settings.json      # 插件设置（外接技能目录、注入预算等）
 trash.log          # 删除审计
 tmp/               # 插件内部临时文件（AI 不直接引用；无 args_file 概念）
@@ -154,6 +154,7 @@ tmp/               # 插件内部临时文件（AI 不直接引用；无 args_fi
       "notes": "优先用 search 工具定位仓库",
       "systemEntryId": "mcp-github", "managed": true,
       "registeredAt": "...", "lastLoadAt": null, "lastSyncAt": null,
+      "lastCheck": { "at": "...", "ok": true, "latencyMs": 412, "toolCount": 3, "serverName": "github-mcp", "toolsDiffer": false, "error": null },
       "tools": [ { "name": "search", "description": "...", "inputSchema": {} } ],
       "disabledTools": ["delete_repository"]
     }
@@ -306,6 +307,18 @@ tmp/               # 插件内部临时文件（AI 不直接引用；无 args_fi
 - **决策：只扫描提示，不做修复**。扫描是插件该干的（判定成本低、结论稳定），修复不是（一次性的数据手术、每个库的形态都不同）。所以插件不附带修复脚本、不提供修复命令、不做自动修复；用户拿到报错后交给 AI 处理。同理，其它出口（如 `/mcp` 命令输出）不重复播报这条告警——提示只在设置页横幅与浮层各出现一次。
 - **测试**：`test/session-audit-smoke.mjs`（候选筛选、三种形状、正文转义提及不误判、已修形态判干净、明文日志、受影响保持重扫、扫到 0 退休、退休后不重写记录、空库立即退休、缺失根目录不报错、`running()` 只在扫描真在跑时为真、客户端契约与"三种提示各用各的标记、横幅不读浮层标记"的字符串守卫）。
 
+### 5.13 连接检测（管理页探活）
+
+**问题**：卡片上原本只有一个「工具数」和一个常驻失败标记，都回答不了「这个条目现在还连得上吗」——工具快照可能是几个月前的，`connectFailed` 只反映本进程里 eager 注册那一次。所以判定必须来自一次真连接。
+
+- **一次真握手，一个短超时**：`POST /skill-mcp-manager/mcp/test {name}` → `testMcp`。用条目自己的 `transport` 走 `connectEntry`（stdio 起子进程 / streamable-http 握手），`checkTimeoutMs`（默认 15000，短于 `trialTimeoutMs` 30s：这次是人在卡片前等），再 `tools/list` 取本次实际工具名。探活客户端在 handler 返回前一定 `close()`：**不留实例、不进 `liveSessions`、不影响任何会话**。
+- **失败是一条结果，不是 HTTP 错误**：路由回 `200 {ok:true, check:{…}}`，`check.ok=false` 且 `check.error` 是传输层/服务器原话；只有「名字不存在」这类校验失败才 `400`。理由与 §5.7 一致：前端要把失败文本原样显示在卡片上，`400` 只会把它变成一句笼统的错误。
+- **只探活，不改快照**：「检测」不写 `tools`（那是「刷新快照」的职责），只在 `check.toolsDiffer` 报「本次工具列表与快照不同」，让卡片提示「工具已变化，建议刷新快照」。也不改 `eagerConnectFailed`——那是常驻注册在**本进程**里的状态，探活成功不等于注册已经恢复。
+- **结果落盘、卡片可跨刷新**：`entry.lastCheck = {at, ok, latencyMs, toolCount, serverName, toolsDiffer, error}` 写进 `registry.json`（`saveRegistry`），`entryView` 原样带出，所以重开页面看到的是「上次连通 · 371 ms · 2 分钟前」/「上次失败 · 2 分钟前 + 错误原文」。客户端在本次页面的检测结果优先于落盘值。
+- **错误文本离开 Host 前脱敏**：错误会被落盘并回渲染，可能带出 URL 或 header 值。`lastCheckView` 用 `scrubSecrets` 把敏感 env 值、全部 header 值、`entry.url` 逐段替换成掩码（长度 <4 的值跳过，避免误伤普通词），`reveal=1` 才给原文。
+- **并发 3**：前端一次最多同时探 3 个条目（`CHECK_CONCURRENCY`），「全部检测」不会瞬间拉起十个子进程；逐个完成即刷新该卡片的圆点与结果行，头部计数同步（连通 / 失败 / 检测中 / 未检测）。
+- **配置**：`checkTimeoutMs`（cordis 配置，不进 settings.json），只影响 UI 探活。
+- **测试**：`test/mcp-check-smoke.mjs`——真起两个 stdio fixture（一个正常服务器：验连通、耗时、工具数、`toolsDiffer`、不重写快照、落盘与 `GET /mcp` 回读；一个 `process.exit(3)`：验失败答案与落盘），未知名字仍 `400`，`entryView` 掩码/reveal 双向断言。
 ---
 
 ## 6. 注入与 KV 缓存设计（统一原则）
@@ -317,9 +330,10 @@ tmp/               # 插件内部临时文件（AI 不直接引用；无 args_fi
 
 ## 7. UI 设计（Slots）
 
-- `settings.section` 两个抽屉页（root scope，replaceRisk=none）：
-  - **SKILL 管理**：列表（名字 / 描述 / 路径，**按路径排序**）；头部计数「N 个技能 · 模型可见 M 个」（M 按行内 `modelInvocable` 过滤，前端计算，随启停刷新）；行内启停 Switch 成功后只在当前列表更新对应行，不全量刷新、不显示成功提示，保持滚动位置；点击条目 → 系统编辑器打开（§4.2）；删除按钮（整个 SKILL 文件夹，跨平台回收站/trash，二次确认）；"添加外接目录"（`ctx.directoryPicker`）。
-  - **工具（MCP）管理**：注册表列表（档位徽标、调用通道 Native/Bridge、工具数、notes、reconcile 状态）→ 详情（工具表格、描述、schema 查看、备注编辑、密钥打码/显示；每个工具名前有“启用/禁用”二档下拉框，启用为正常文字、禁用后下拉框/名称/描述变灰）→ "查看描述"(=peek 只读快照)、"刷新快照"（一次性试连并更新 registry，不留下实例）、档位切换（立即对存活会话生效；升级时弹窗提示"一次前缀失效"、无需二次确认）、**删除条目（仅 UI；= registry + patch 整条 entry 一起删，非翻 disabled、非只删一行）**、"/mcp prepare-uninstall"（= 卸载整个插件时交还原生）。
+- `settings.section` 两个抽屉页（root scope，replaceRisk=none），**均为卡片化布局**：
+  - **SKILL 管理**：自适应卡片网格（`minmax(240px,1fr)`），每张卡片 = 名字 + 缩写标记 + 路径（单行省略，悬停看全文）+ 描述（最多三行）+ 启停 Switch + 「打开 / 删除」；只读（shipped）卡片虚线边框、只留「打开」并标注「shipped 技能，只能查看」；删除仍是整个 SKILL 文件夹（跨平台回收站 / 插件 trash）并二次确认。头部计数「N 个技能 · 模型可见 M 个」。启停成功后只更新该卡片，不全量刷新、不提示，保持滚动位置；点击文件名 → 系统编辑器打开（§4.2）。
+  - **工具（MCP）管理**：自适应卡片网格，每张卡片 = 状态圆点（绿=连通 / 红=失败 / 脉冲=检测中 / 灰=未检测）+ 名字 + 传输方式与工具数 + 档位下拉（常驻/按需/关闭，切换即对存活会话生效，无需二次确认）+ 描述（最多三行）+ 结果行（「连通 · 371 ms · 12 个工具」或「上次失败 · 5 分钟前」）+ 失败原文（>76px 滚动）+ 「检测 / 详情 / 删除」；`connectFailed` 标注「常驻启动失败」，`toolsDiffer` 标注「工具已变化，建议刷新快照」。头部：「N 个服务器 · 连通 x · 失败 y · 检测中 z · 未检测 w」+「全部检测 / 显示密钥 / 刷新」。两条注入设置收进可折叠的「高级设置」。
+  - **详情抽屉**（右侧 fixed 覆盖层，`role=dialog`，点遮罩或「关闭」退出）：档位下拉、传输、上次检测、服务器自报名/版本/标题/网站、命令与参数、URL、工作目录、使用说明、备注、上次刷新快照、环境变量与 headers（默认打码）、逐工具「启用/禁用」下拉（禁用后名称与描述变灰）、「检测连接 / 查看描述（peek）/ 刷新快照」以及 peek 输出。**删除条目**（仅 UI；= registry + patch 整条 entry 一起删，非翻 disabled、非只删一行）也在卡片上。
 - 入口：`sidebar.footer.action` + `/skills`、`/mcp` 命令；状态同步经 RPC 推送。
 - **浏览器请求的地址检查**（2026-09-24）：带 `Origin` 的读和写都必须同源，并且主机名是 `localhost`、本机名或 IP 字面量。局域网主机名放在插件设置的允许名单里，默认空；不在名单里的主机名打不开这些接口，也就不能自己把自己加进去。不带 `Origin` 的调用保持原样（POST 仍要同源，GET 不额外拦截）。设置页同一处还有「模型登记本地程序」三档。常驻连接失败时，列表在档位旁边显示「连接失败，按按需处理」。
 
