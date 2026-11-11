@@ -302,21 +302,92 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // not the list the user came for.
     const [openGroups, setOpenGroups] = useState({});
     const [busyGroup, setBusyGroup] = useState("");
+    // Workspace selector: project-level skills are keyed by cwd, so the list is
+    // re-read whenever the picker changes.
+    const [workspace, setWorkspace] = useState("");
+    const [workspaces, setWorkspaces] = useState([]);
+    // User-defined groups (④B). Independent of the origin buckets below: an
+    // assigned skill appears in its custom group and nowhere else.
+    const [groups, setGroups] = useState({ groups: [], members: {} });
+    const [newGroupName, setNewGroupName] = useState("");
+    const [renaming, setRenaming] = useState(null);
+    // Import sheet: the host scans other agents' skill directories and the sheet
+    // reviews what would be copied before anything touches the disk.
+    const [importPlan, setImportPlan] = useState(null);
+    const [importPicked, setImportPicked] = useState([]);
+    const [busyImport, setBusyImport] = useState(false);
 
     const refresh = useCallback(async () => {
       setLoading(true);
       setError("");
       try {
-        const data = await getJson("/skill-mcp-manager/skills");
+        const query = workspace === "" ? "" : "?cwd=" + encodeURIComponent(workspace);
+        const data = await getJson("/skill-mcp-manager/skills" + query);
         setSkills(data.skills || []);
+        if (Array.isArray(data.workspaces)) setWorkspaces(data.workspaces);
       } catch (err) {
         setError(errText(err));
       } finally {
         setLoading(false);
       }
+    }, [workspace]);
+
+    const refreshGroups = useCallback(async () => {
+      try {
+        const data = await getJson("/skill-mcp-manager/skill-groups");
+        setGroups({ groups: data.groups || [], members: data.members || {} });
+      } catch {
+        // An older host has no group store yet: the page still works, without groups.
+        setGroups({ groups: [], members: {} });
+      }
     }, []);
 
     useEffect(() => { refresh(); }, [refresh]);
+    useEffect(() => { refreshGroups(); }, [refreshGroups]);
+
+    async function groupAction(payload) {
+      try {
+        const data = await postJson("/skill-mcp-manager/skill-groups", payload);
+        setGroups({ groups: data.groups || [], members: data.members || {} });
+        setRenaming(null);
+      } catch (err) {
+        setError(errText(err));
+      }
+    }
+
+    async function scanImport() {
+      setBusyImport(true);
+      setError("");
+      try {
+        const query = workspace === "" ? "" : "?cwd=" + encodeURIComponent(workspace);
+        const data = await getJson("/skill-mcp-manager/skills/import" + query);
+        setImportPlan(data);
+        setImportPicked([]);
+      } catch (err) {
+        setError(errText(err));
+      } finally {
+        setBusyImport(false);
+      }
+    }
+
+    async function runImport() {
+      if (importPicked.length === 0) return;
+      setBusyImport(true);
+      try {
+        const data = await postJson("/skill-mcp-manager/skills/import", { items: importPicked, cwd: workspace });
+        const imported = (data.imported || []).map((item) => item.name);
+        const skipped = (data.skipped || []).length;
+        setNotice("已导入 " + imported.length + " 个技能" + (imported.length > 0 ? "：" + imported.join("、") : "")
+          + (skipped > 0 ? "（" + skipped + " 个跳过）" : ""));
+        setImportPlan(null);
+        setImportPicked([]);
+        await refresh();
+      } catch (err) {
+        setError(errText(err));
+      } finally {
+        setBusyImport(false);
+      }
+    }
 
     async function toggle(skill) {
       try {
@@ -415,6 +486,15 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                 h("span", { className: "smx-switchline__label" }, skill.modelInvocable ? "模型可见" : "模型隐藏"),
               ),
           h("div", { className: "smx-card__actions" },
+            h("select", {
+              className: "smx-select smx-select--inline",
+              title: "放进自定义分组",
+              value: assignedTo[skill.name] || "",
+              onChange: (event) => groupAction({ action: "assign", skill: skill.name, group: event.target.value }),
+            },
+              h("option", { value: "" }, "未分组"),
+              (groups.groups || []).map((group) => h("option", { key: group.id, value: group.id }, group.name)),
+            ),
             h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => open(skill) }, "打开"),
             skill.readonly
               ? null
@@ -429,9 +509,10 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       );
     }
 
-    // The host decides the group (provider name); the client only orders them and
-    // remembers which are folded.
-    const groups = [];
+    // The host decides the origin bucket (provider name); the client only orders
+    // them and remembers which are folded. Custom groups (state `groups`) are a
+    // separate axis laid on top, not a replacement.
+    const originGroups = [];
     {
       const byKey = new Map();
       for (const skill of skills || []) {
@@ -449,17 +530,74 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
             skills: [],
           };
           byKey.set(origin.key, group);
-          groups.push(group);
+          originGroups.push(group);
         }
         group.skills.push(skill);
       }
-      groups.sort((a, b) => (a.kind === b.kind ? String(a.label).localeCompare(String(b.label)) : a.kind === "system" ? -1 : 1));
+      originGroups.sort((a, b) => (a.kind === b.kind ? String(a.label).localeCompare(String(b.label)) : a.kind === "system" ? -1 : 1));
     }
 
-    const sections = groups.map((group) => {
+    // Custom groups come first, in the user's order. A skill that sits in one of
+    // them never shows up again under its origin bucket (no duplication).
+    const assignedTo = groups.members || {};
+    const customSections = (groups.groups || []).map((group) => {
+      const key = "custom:" + group.id;
+      const unfolded = openGroups[key] !== undefined ? openGroups[key] : true;
+      const members = (skills || []).filter((skill) => assignedTo[skill.name] === group.id);
+      const enabled = members.filter((skill) => skill.modelInvocable).length;
+      return h("section", { key, className: cx("smx-group", "smx-group--custom") },
+        h("div", { className: "smx-group__head" },
+          h("button", {
+            type: "button",
+            className: "smx-group__toggle",
+            "aria-expanded": unfolded ? "true" : "false",
+            onClick: () => setOpenGroups((current) => ({ ...current, [key]: !unfolded })),
+          },
+            h("span", { className: cx("smx-group__chevron", unfolded && "is-open") }, "\u25b8"),
+            renaming !== null && renaming.id === group.id
+              ? h("input", {
+                  className: "smx-input smx-input--inline",
+                  value: renaming.name,
+                  autoFocus: true,
+                  onChange: (event) => setRenaming({ id: group.id, name: event.target.value }),
+                  onKeyDown: (event) => {
+                    if (event.key === "Enter") groupAction({ action: "rename", id: group.id, name: renaming.name });
+                    if (event.key === "Escape") setRenaming(null);
+                  },
+                })
+              : h("span", { className: "smx-group__title" }, group.name),
+            h("span", { className: "smx-group__count" }, members.length + " 个 \u00b7 开启 " + enabled),
+          ),
+          h("span", { className: "smx-group__actions" },
+            renaming !== null && renaming.id === group.id
+              ? h("span", { className: "smx-confirm" },
+                  h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => groupAction({ action: "rename", id: group.id, name: renaming.name }) }, "保存"),
+                  h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => setRenaming(null) }, "取消"),
+                )
+              : h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => setRenaming({ id: group.id, name: group.name }) }, "重命名"),
+            h("button", { type: "button", className: "smx-btn smx-btn--ghost", title: "上移", onClick: () => groupAction({ action: "move", id: group.id, direction: -1 }) }, "\u2191"),
+            h("button", { type: "button", className: "smx-btn smx-btn--ghost", title: "下移", onClick: () => groupAction({ action: "move", id: group.id, direction: 1 }) }, "\u2193"),
+            confirming === key
+              ? h("span", { className: "smx-confirm" },
+                  h("button", { type: "button", className: "smx-btn smx-btn--danger", onClick: () => { setConfirming(""); groupAction({ action: "delete", id: group.id }); } }, "确认删除分组"),
+                  h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => setConfirming("") }, "取消"),
+                )
+              : h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => setConfirming(key) }, "删除分组"),
+          ),
+        ),
+        unfolded
+          ? (members.length === 0
+              ? h("div", { className: "smx-cards" }, h(Empty, null, "还没有技能放进这个分组 —— 在技能卡片上选分组"))
+              : h("div", { className: "smx-cards" }, members.map(skillCard)))
+          : null,
+      );
+    });
+
+    const loose = (group) => group.skills.filter((skill) => assignedTo[skill.name] === undefined);
+    const originSections = groups.map((group) => {
       const unfolded = openGroups[group.key] !== undefined ? openGroups[group.key] : group.kind === "system";
-      const writable = group.skills.filter((skill) => !skill.readonly);
-      const enabled = group.skills.filter((skill) => skill.modelInvocable).length;
+      const writable = loose(group).filter((skill) => !skill.readonly);
+      const enabled = loose(group).filter((skill) => skill.modelInvocable).length;
       return h("section", { key: group.key, className: cx("smx-group", "smx-group--" + group.kind) },
         h("div", { className: "smx-group__head" },
           h("button", {
@@ -470,7 +608,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
           },
             h("span", { className: cx("smx-group__chevron", unfolded && "is-open") }, "\u25b8"),
             h("span", { className: "smx-group__title" }, group.title),
-            h("span", { className: "smx-group__count" }, group.skills.length + " 个 \u00b7 开启 " + enabled),
+            h("span", { className: "smx-group__count" }, loose(group).length + " 个 \u00b7 开启 " + enabled),
             group.kind !== "system" && group.packageName && group.packageName !== group.label
               ? h("span", { className: "smx-group__sub" }, group.label)
               : null,
@@ -489,28 +627,111 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                     ? "随包只读"
                     : enabled === 0
                       ? "全部关闭"
-                      : enabled === group.skills.length
+                      : enabled === loose(group).length
                         ? "全部开启"
                         : "部分开启"),
               ),
         ),
-        unfolded ? h("div", { className: "smx-cards" }, group.skills.map(skillCard)) : null,
+        unfolded ? h("div", { className: "smx-cards" }, loose(group).map(skillCard)) : null,
       );
     });
+
+    // The import sheet reviews exactly what the host offered; nothing is copied
+    // until 导入 is pressed, and a stale sheet cannot overwrite (the host re-plans).
+    const importSheet = importPlan === null ? null : h("section", { className: "smx-import" },
+      h("div", { className: "smx-import__head" },
+        h("div", null,
+          h("div", { className: "smx-import__title" }, "从本地 agent 导入技能"),
+          h("div", { className: "smx-import__sub" },
+            "会把选中的目录复制到 " + importPlan.target + "，源目录不动；同名技能不会被覆盖"),
+        ),
+        h("div", { className: "smx-import__actions" },
+          h("button", {
+            type: "button",
+            className: "smx-btn smx-btn--primary",
+            disabled: busyImport || importPicked.length === 0,
+            onClick: runImport,
+          }, busyImport ? "导入中\u2026" : "导入选中 " + importPicked.length + " 个"),
+          h("button", {
+            type: "button",
+            className: "smx-btn",
+            disabled: busyImport,
+            onClick: () => { setImportPlan(null); setImportPicked([]); },
+          }, "取消"),
+        ),
+      ),
+      importPlan.warning ? h(Notice, { kind: "error" }, importPlan.warning) : null,
+      (importPlan.sources || []).map((source) => h("div", { key: source.id, className: "smx-import__source" },
+        h("div", { className: "smx-import__sourcetitle" }, source.label,
+          h("span", { className: "smx-import__path" }, source.dir),
+        ),
+        source.exists === false
+          ? h("div", { className: "smx-import__empty" }, "这个目录不存在")
+          : (source.skills || []).length === 0
+            ? h("div", { className: "smx-import__empty" }, "没有可导入的技能")
+            : h("ul", { className: "smx-import__list" }, source.skills.map((item) => {
+                const picked = importPicked.includes(item.dir);
+                const blocked = item.blocked === true;
+                return h("li", { key: item.dir, className: cx("smx-import__item", blocked && "is-blocked") },
+                  h("label", { className: "smx-import__pick" },
+                    h("input", {
+                      type: "checkbox",
+                      checked: !blocked && picked,
+                      disabled: blocked,
+                      onChange: () => setImportPicked((current) => (picked
+                        ? current.filter((dir) => dir !== item.dir)
+                        : [...current, item.dir])),
+                    }),
+                    h("span", { className: "smx-import__name" }, item.name),
+                  ),
+                  h("span", { className: "smx-import__desc" }, blocked ? item.conflict : (item.description || item.conflict || "")),
+                );
+              })),
+      )),
+    );
 
     return h("div", { className: "smx" },
       h("div", { className: "smx-head" },
         h("span", { className: "smx-count" }, skills
           ? String(skills.length) + " 个技能 \u00b7 模型可见 " + skills.filter((s) => s.modelInvocable).length + " 个"
-            + (groups.length > 1 ? " \u00b7 " + (groups.length - 1) + " 个插件分组" : "")
+            + (originGroups.length > 1 ? " \u00b7 " + (originGroups.length - 1) + " 个插件分组" : "")
           : ""),
+        h("select", {
+          className: "smx-select",
+          title: "切换工作区（项目级技能按工作区读取）",
+          value: workspace,
+          onChange: (event) => setWorkspace(event.target.value),
+        },
+          h("option", { value: "" }, "默认工作区"),
+          (workspaces || []).map((item) => h("option", { key: item.id, value: item.path }, item.title || item.path)),
+        ),
+        h("span", { className: "smx-head__inline" },
+          h("input", {
+            className: "smx-input",
+            placeholder: "新分组名",
+            value: newGroupName,
+            onChange: (event) => setNewGroupName(event.target.value),
+            onKeyDown: (event) => {
+              if (event.key !== "Enter" || newGroupName.trim() === "") return;
+              groupAction({ action: "create", name: newGroupName }).then(() => setNewGroupName(""));
+            },
+          }),
+          h("button", {
+            type: "button",
+            className: "smx-btn",
+            disabled: newGroupName.trim() === "",
+            onClick: () => groupAction({ action: "create", name: newGroupName }).then(() => setNewGroupName("")),
+          }, "新建分组"),
+        ),
+        h("button", { type: "button", className: "smx-btn", disabled: busyImport, onClick: scanImport }, busyImport ? "扫描中\u2026" : "导入本地技能"),
         h("button", { type: "button", className: "smx-btn", onClick: refresh }, "刷新"),
       ),
+      importSheet,
       notice ? h(Notice, { kind: "success", onDismiss: () => setNotice("") }, notice) : null,
       error ? h(Notice, { kind: "error", onDismiss: () => setError("") }, error) : null,
       loading ? h(Empty, null, "加载中\u2026")
         : skills && skills.length === 0 ? h(Empty, null, "没有可管理的技能（bundle 型 SKILL.md）")
-        : h("div", { className: "smx-groups" }, sections),
+        : h("div", { className: "smx-groups" }, [...customSections, ...originSections]),
     );
   }
 
@@ -1299,9 +1520,11 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
 
     useEffect(() => { load(); }, [load]);
 
+    // Everything here writes the policy of THIS conversation only; the host applies
+    // it on the next call (MCP connections are dropped the moment they turn off), so
+    // no restart and no page reload is involved.
     async function flip(kind, name, enabled) {
-      const key = kind + ":" + name;
-      setBusy(key);
+      setBusy(kind + ":" + name);
       try {
         const data = await postJson("/skill-mcp-manager/session-caps", { session: sessionId, kind, name, enabled });
         setState(data);
@@ -1313,30 +1536,31 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
 
-    // 全部开启 / 全部关闭: one host call, one policy write per name; live MCP
-    // connections are dropped server-side on the way, so the running conversation
-    // sees it immediately.
-    async function flipAll(enabled) {
-      setBusy("bulk");
+    // A whole kind, or a whole group inside one: the host has a bulk branch per kind,
+    // and a group is the same loop over its own names.
+    async function flipMany(kind, names, enabled, label) {
+      if (names.length === 0) return;
+      const key = "many:" + kind;
+      setBusy(key);
       try {
         let data;
-        try {
-          data = await postJson("/skill-mcp-manager/session-caps", { session: sessionId, bulk: true, enabled });
-        } catch (bulkError) {
-          // A host without the bulk branch still gets the same result one name at a
-          // time; the switch must not be dead just because the host is older.
-          const current = state || { mcp: [], skills: [] };
-          for (const item of current.mcp || []) {
-            data = await postJson("/skill-mcp-manager/session-caps", { session: sessionId, kind: "mcp", name: item.name, enabled });
+        const wholeKind = label === undefined;
+        if (wholeKind) {
+          try {
+            data = await postJson("/skill-mcp-manager/session-caps", { session: sessionId, kind, bulk: true, enabled });
+          } catch {
+            data = undefined; // an older host: fall through to one name at a time
           }
-          for (const item of current.skills || []) {
-            data = await postJson("/skill-mcp-manager/session-caps", { session: sessionId, kind: "skills", name: item.name, enabled });
-          }
-          if (data === undefined) throw bulkError;
         }
-        setState(data);
+        if (data === undefined) {
+          for (const name of names) {
+            data = await postJson("/skill-mcp-manager/session-caps", { session: sessionId, kind, name, enabled });
+          }
+        }
+        if (data !== undefined) setState(data);
+        setNotice((enabled ? "已在本对话开启 " : "已在本对话关闭 ") + (label || (kind === "mcp" ? "全部 MCP" : "全部技能"))
+          + "（" + names.length + " 个）");
         setError("");
-        setNotice(enabled ? "已在本对话启用全部能力" : "已在本对话移除全部能力（MCP 连接已断开）");
       } catch (err) {
         setError(errText(err));
       } finally {
@@ -1346,13 +1570,10 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
 
     function tile(kind, item, meta, badge) {
       const key = kind + ":" + item.name;
-      const running = busy === key || busy === "bulk";
-      return h("article", {
-        key,
-        className: cx("smx-cap", !item.enabled && "is-off"),
-      },
+      const running = busy === key || busy === "many:" + kind;
+      return h("article", { key, className: cx("smx-cap", !item.enabled && "is-off") },
         h("div", { className: "smx-cap__head" },
-          h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle"), title: item.enabled ? "可用" : "本对话已移除" }),
+          h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle"), title: item.enabled ? "可用" : "本对话已关闭" }),
           h("span", { className: "smx-cap__name", title: item.name }, item.name),
           badge ? h(Badge, { tone: "muted" }, badge) : null,
         ),
@@ -1360,30 +1581,95 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         h("div", { className: "smx-cap__foot" },
           h("label", { className: "smx-switchline" },
             h(Switch, { checked: item.enabled, disabled: running, onChange: (next) => flip(kind, item.name, next) }),
-            h("span", { className: "smx-switchline__label" }, item.enabled ? "可用" : "已移除"),
+            h("span", { className: "smx-switchline__label" }, item.enabled ? "可用" : "已关闭"),
           ),
-          h("span", { className: "smx-cap__hint" }, item.enabled ? "本对话可用" : "本对话不可用"),
+          item.enabled ? h("span", { className: "smx-cap__hint" }, "本对话可用") : null,
         ),
+      );
+    }
+
+    // One section per kind, grouped by who owns the row: the registry (your own MCP
+    // servers), each plugin that mounted one, and for skills the 系统 / 插件 split the
+    // library page already uses.
+    function section(kind, title, items, groupOf, metaOf, badgeOf) {
+      const groups = [];
+      const byKey = new Map();
+      for (const item of items) {
+        const group = groupOf(item);
+        let bucket = byKey.get(group.key);
+        if (bucket === undefined) {
+          bucket = { key: group.key, title: group.title, items: [] };
+          byKey.set(group.key, bucket);
+          groups.push(bucket);
+        }
+        bucket.items.push(item);
+      }
+      const onCount = items.filter((item) => item.enabled).length;
+      const disabled = busy === "many:" + kind;
+      return h("section", { key: kind, className: "smx-group smx-group--system" },
+        h("div", { className: "smx-group__head" },
+          h("div", { className: "smx-group__toggle" },
+            h("span", { className: "smx-group__title" }, title),
+            h("span", { className: "smx-group__count" }, onCount + " / " + items.length + " 开启"),
+          ),
+          h("span", { className: "smx-group__actions" },
+            h("button", {
+              type: "button",
+              className: "smx-btn smx-btn--ghost",
+              disabled: disabled || items.length === 0,
+              onClick: () => flipMany(kind, items.map((item) => item.name), true),
+            }, "全部开启"),
+            h("button", {
+              type: "button",
+              className: "smx-btn smx-btn--ghost",
+              disabled: disabled || items.length === 0,
+              onClick: () => flipMany(kind, items.map((item) => item.name), false),
+            }, "全部关闭"),
+          ),
+        ),
+        items.length === 0
+          ? h(Empty, null, kind === "mcp" ? "能力库里没有可用的 MCP 服务器" : "当前作用域没有技能")
+          : h("div", { className: "smx-capgroups" }, groups.map((bucket) => {
+              const bucketOn = bucket.items.filter((item) => item.enabled).length;
+              return h("div", { key: bucket.key, className: "smx-capgroup" },
+                h("div", { className: "smx-capgroup__head" },
+                  h("span", { className: "smx-capgroup__title" }, bucket.title),
+                  h("span", { className: "smx-capgroup__count" }, bucketOn + " / " + bucket.items.length),
+                  h("span", { className: "smx-capgroup__actions" },
+                    h("button", {
+                      type: "button",
+                      className: "smx-btn smx-btn--ghost",
+                      disabled: disabled,
+                      onClick: () => flipMany(kind, bucket.items.map((item) => item.name), true, bucket.title),
+                    }, "全开"),
+                    h("button", {
+                      type: "button",
+                      className: "smx-btn smx-btn--ghost",
+                      disabled: disabled,
+                      onClick: () => flipMany(kind, bucket.items.map((item) => item.name), false, bucket.title),
+                    }, "全关"),
+                  ),
+                ),
+                h("div", { className: "smx-cap-grid" }, bucket.items.map((item) => tile(kind, item, metaOf(item), badgeOf(item)))),
+              );
+            })),
       );
     }
 
     const mcp = (state && state.mcp) || [];
     const skills = (state && state.skills) || [];
     const onCount = mcp.filter((item) => item.enabled).length + skills.filter((item) => item.enabled).length;
-    const totalCount = mcp.length + skills.length;
 
     return h("div", { className: "smx-view" },
       h("div", { className: "smx-head" },
         h("div", null,
           h("h2", { className: "smx-title" }, "能力管理"),
           h("div", { className: "smx-subtitle" },
-            "开关即时生效，且只影响这个对话：关掉的 MCP 会立刻断开、从本对话的工具面与目录里消失；技能调用会被本对话拒绝。全局配置不变。"),
+            "新对话默认全部关闭。这里的开关只影响这个对话，并且即时生效：关掉的 MCP 会立刻断开、从本对话的工具面与目录里消失，技能与插件自带的 MCP 调用会被本对话拒绝。"),
         ),
         h("div", { className: "smx-head__meta" },
-          h("span", { className: "smx-count" }, state === null ? "" : onCount + " / " + totalCount + " 可用"),
-          h("button", { type: "button", className: "smx-btn", disabled: busy === "bulk" || totalCount === 0, onClick: () => flipAll(false) }, "全部关闭"),
-          h("button", { type: "button", className: "smx-btn smx-btn--primary", disabled: busy === "bulk" || totalCount === 0, onClick: () => flipAll(true) }, "全部开启"),
-          h("button", { type: "button", className: "smx-btn", disabled: busy === "bulk", onClick: load }, "刷新"),
+          h("span", { className: "smx-count" }, state === null ? "" : "本对话开启 " + onCount + " / " + (mcp.length + skills.length)),
+          h("button", { type: "button", className: "smx-btn", disabled: busy !== "", onClick: load }, "刷新"),
         ),
       ),
       notice ? h(Notice, { kind: "success", onDismiss: () => setNotice("") }, notice) : null,
@@ -1391,37 +1677,21 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       state === null
         ? h(Empty, null, sessionId === "" ? "这个视图需要一个会话" : "加载中\u2026")
         : h("div", { className: "smx-groups" },
-            h("section", { className: "smx-group smx-group--system" },
-              h("div", { className: "smx-group__head" },
-                h("div", { className: "smx-group__toggle" },
-                  h("span", { className: "smx-group__title" }, "MCP 服务器"),
-                  h("span", { className: "smx-group__count" }, mcp.length + " 个"),
-                  state.live ? null : h("span", { className: "smx-group__sub" }, "会话未启动，开关在下一轮生效"),
-                ),
-              ),
-              mcp.length === 0
-                ? h(Empty, null, "能力库里没有可用的 MCP 服务器")
-                : h("div", { className: "smx-cap-grid" },
-                    mcp.map((item) => tile("mcp", item,
-                      [item.transport, item.tier, item.toolCount + " 个工具"].filter(Boolean).join(" \u00b7 "),
-                      item.tier === "eager" ? "常驻" : null)),
-                  ),
-            ),
-            h("section", { className: "smx-group smx-group--system" },
-              h("div", { className: "smx-group__head" },
-                h("div", { className: "smx-group__toggle" },
-                  h("span", { className: "smx-group__title" }, "技能"),
-                  h("span", { className: "smx-group__count" }, skills.length + " 个"),
-                ),
-              ),
-              skills.length === 0
-                ? h(Empty, null, "当前作用域没有技能")
-                : h("div", { className: "smx-cap-grid" },
-                    skills.map((item) => tile("skills", item,
-                      item.provider ? "来源 " + item.provider : "来源未知",
-                      item.readonly ? "只读" : null)),
-                  ),
-            ),
+            section("mcp", "MCP 服务器", mcp,
+              (item) => (item.source === "registry"
+                ? { key: "registry", title: "我的 MCP 服务器" }
+                : { key: "plugin:" + (item.owner || ""), title: item.owner ? "插件 \u00b7 " + item.owner : "未归属插件" }),
+              (item) => [item.source === "registry" ? item.transport : "插件自带", item.source === "registry" ? item.tier : "", item.toolCount > 0 ? item.toolCount + " 个工具" : ""].filter(Boolean).join(" \u00b7 "),
+              (item) => (item.source === "registry" && item.tier === "eager" ? "常驻" : null)),
+            section("skills", "技能", skills,
+              (item) => {
+                const origin = originOf(item);
+                return origin.kind === "plugin"
+                  ? { key: "plugin:" + origin.key, title: "插件 \u00b7 " + (origin.package || origin.label || origin.key) }
+                  : { key: "system", title: "系统" };
+              },
+              (item) => (item.provider ? "来源 " + item.provider : "来源未知"),
+              (item) => (item.readonly ? "只读" : null)),
           ),
     );
   }
@@ -1476,6 +1746,14 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-cap__meta { font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
     ".smx-cap__foot { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:auto; padding-top:6px; border-top:1px solid var(--dsw-alias-border-l1); }",
     ".smx-cap__hint { font-size:11px; color:var(--dsw-alias-label-secondary); }",
+    // Groups inside a conversation section (my servers / one per plugin): a quiet
+    // sub-header, not another card frame.
+    ".smx-capgroups { display:flex; flex-direction:column; gap:12px; }",
+    ".smx-capgroup { display:flex; flex-direction:column; gap:8px; }",
+    ".smx-capgroup__head { display:flex; align-items:center; gap:8px; }",
+    ".smx-capgroup__title { font-size:12px; font-weight:600; color:var(--dsw-alias-label-secondary); }",
+    ".smx-capgroup__count { font-size:11px; color:var(--dsw-alias-label-secondary); }",
+    ".smx-capgroup__actions { display:flex; align-items:center; gap:4px; }",
     ".smx-page__body { display:flex; flex-direction:column; flex:1; min-height:0; overflow:auto; padding-bottom:28px; padding-left:max(max(16px,min(4vw,48px)),50% - 480px); padding-right:max(max(16px,min(4vw,48px)),50% - 480px); }",
     ".smx-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }",
     ".smx-title { margin:0; font-size:15px; font-weight:600; color:var(--dsw-alias-label-primary); }",
@@ -1576,6 +1854,29 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-kv__v { color:var(--dsw-alias-label-primary); word-break:break-all; }",
     ".smx-select { font-size:12px; padding:5px 8px; border-radius:6px; border:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); }",
     ".smx-select--tight { flex:none; font-size:11px; padding:3px 6px; }",
+    // Skill groups + import sheet (④B, ①A): the group header carries its own
+    // actions, and the sheet is a self-contained panel above the grid.
+    ".smx-group--custom .smx-group__title { font-weight:600; }",
+    ".smx-group__actions { display:flex; align-items:center; gap:4px; flex:none; }",
+    ".smx-head__inline { display:flex; align-items:center; gap:6px; flex:none; }",
+    ".smx-input--inline { font-size:12px; padding:2px 6px; min-width:120px; }",
+    ".smx-select--inline { flex:none; font-size:11px; padding:3px 6px; max-width:120px; }",
+    ".smx-import { display:flex; flex-direction:column; gap:8px; padding:12px 14px; border:1px solid var(--dsw-alias-brand-primary); border-radius:12px; background:var(--dsw-alias-bg-layer-1); }",
+    ".smx-import__head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }",
+    ".smx-import__title { font-size:13px; font-weight:600; }",
+    ".smx-import__sub { font-size:11px; color:var(--dsw-alias-label-secondary); margin-top:2px; word-break:break-all; }",
+    ".smx-import__actions { display:flex; align-items:center; gap:6px; flex:none; }",
+    ".smx-import__source { display:flex; flex-direction:column; gap:4px; padding-top:8px; border-top:1px solid var(--dsw-alias-border-l1); }",
+    ".smx-import__sourcetitle { display:flex; align-items:baseline; gap:8px; font-size:12px; font-weight:600; }",
+    ".smx-import__path { font-size:11px; font-weight:400; color:var(--dsw-alias-label-secondary); word-break:break-all; }",
+    ".smx-import__list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:2px; }",
+    ".smx-import__item { display:flex; align-items:baseline; gap:8px; padding:3px 4px; border-radius:6px; }",
+    ".smx-import__item:hover { background:var(--dsw-alias-bg-layer-2); }",
+    ".smx-import__item.is-blocked { opacity:.55; }",
+    ".smx-import__pick { display:flex; align-items:center; gap:6px; flex:none; min-width:180px; }",
+    ".smx-import__name { font-size:12px; }",
+    ".smx-import__desc { font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-import__empty { font-size:11px; color:var(--dsw-alias-label-secondary); }",
     ".smx-tools { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:4px; }",
     ".smx-tool { display:flex; align-items:flex-start; gap:8px; font-size:12px; }",
     ".smx-tool__tier { flex-shrink:0; min-width:58px; font-size:11px; padding:2px 4px; border-radius:5px; border:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); }",
@@ -1617,13 +1918,27 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // and everything around it stays click-through.
     // A tab beside 轨迹 in the conversation's own view switcher. The host injects
     // the session id; everything this view edits is scoped to that conversation.
-    ctx.slots.inject("conversation.view", () => ctx.slots.register({
-      name: "conversation.view",
-      id: "capability",
-      order: 11,
-      label: () => "能力管理",
-      inject: (sessionId) => ({ sessionId }),
-    }, CapabilityView));
+    // A failure here must never take the app down with it: the conversation view is
+    // a tab next to 轨迹, and a host that does not declare the slot (or a future
+    // registration contract) should cost this plugin one tab, not the whole shell.
+    try {
+      ctx.slots.inject("conversation.view", () => {
+        try {
+          return ctx.slots.register({
+            name: "conversation.view",
+            id: "capability",
+            order: 11,
+            label: () => "能力管理",
+            inject: (sessionId) => ({ sessionId }),
+          }, CapabilityView);
+        } catch (error) {
+          console.warn("skill-mcp-manager: conversation view not registered:", error);
+          return () => {};
+        }
+      });
+    } catch (error) {
+      console.warn("skill-mcp-manager: conversation view slot unavailable:", error);
+    }
     ctx.slots.inject("shell.overlay", () => ctx.slots.register({
       name: "shell.overlay",
       id: "capability-legacy-sessions",

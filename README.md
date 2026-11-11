@@ -30,9 +30,14 @@ Some MCP servers are injected by a plugin's own config (box, for example); the l
 
 A crashed or failed stdio MCP leaves its whole `npx → cmd → node` chain behind. **Clean up residual processes** in the MCP header scans first (it lists pids and the command they match) and only kills after you confirm; only commands this plugin manages are candidates, and anything owned by a running DSH is always kept — including the connections you are using right now.
 
-### 1.4 Per-conversation capability view
+### 1.4 Per-conversation capability view (closed by default)
 
-The conversation's view switcher (next to the trajectory view) gains a **能力管理** tab: it lists the library's MCP servers and the skills in scope for *this* conversation, one switch per row. Turning one off only affects this chat — the MCP server is dropped from the conversation and its catalog, `mcp_load`/`mcp_call` refuse it, and skill loads are denied by a guard registered on this conversation (with a best-effort attempt to hide it from the skill catalog too). Global configuration and skill files are untouched, and the policy survives reopening the conversation.
+The conversation's view switcher (next to the trajectory view) gains a **能力管理** tab: one card and one switch per MCP server and per skill, for *this* conversation only.
+
+- **A new conversation starts with everything off**: no MCP server is mounted, the catalog is empty, and every `skill` call and plugin-mounted `mcp__*` call is refused. Turn on what this chat needs.
+- **Bulk switches are per kind**: MCP and skills each have their own *enable all / disable all*, and every group inside them has its own pair too.
+- **Grouped by origin**: MCP splits into your own servers and one group per plugin that mounts its own; skills split into 系统 and one group per plugin.
+- **Immediate**: a server that turns off is disconnected and dropped from this conversation's catalog, `mcp_load`/`mcp_call` refuse it, and a skill that turns off leaves the skill catalog while its load call is denied by a guard registered on this conversation. Global configuration and skill files are untouched, and the policy survives reopening the conversation.
 
 ### 1.5 Sidebar entry
 

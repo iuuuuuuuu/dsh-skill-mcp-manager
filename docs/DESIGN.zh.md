@@ -312,6 +312,19 @@ tmp/               # 插件内部临时文件（AI 不直接引用；无 args_fi
 
 ### 5.16 会话级能力策略（对话内的「能力管理」）
 
+**问题**：能力库只能改全局配置。可「这个对话里我不想让它用 reqable」「这条会话先别给模型看这个技能」是会话级诉求，改全局再改回来既麻烦又会波及其它对话。
+
+- **默认全关**（Owner 要求）：新对话一开始什么都用不了 —— 不挂载常驻 MCP、目录注入为空、mcp_load / mcp_call 全拒、技能目录不列技能、skill 与插件自带的 mcp__* 调用全拒。要用的在「能力管理」里开。
+- **存储**：dataDir/session-caps.json，形如 { [sessionId]: { mcp: [allowed], skills: [allowed] } }（记**允许项**；没有条目的会话就是全关，全关的会话不写盘）。按会话 id 落盘，重开对话仍然生效。
+- **作用点（全部读实时策略）**：① agent/pre-step 的目录注入只列允许的 MCP；② ensureSessionRuntime 只挂载允许的条目、并断开被关掉的；③ mcp_load / mcp_call 对未允许项报 off for this conversation；④ 技能与**插件注入的 MCP** 走同一个 agent 上下文上的 tools/pre-execute 守卫（未允许的 skill 调用与 mcp__<server>__<tool> 调用一律 deny）。
+- **为什么技能要两层**：宿主的技能目录与 skill 工具同生共死，单个技能从目录消失只能靠会话层影子（ctx.skills.register 同名 + modelInvocable:false），而影子的效果依赖宿主的层优先级；守卫不依赖它，是硬保证。影子按「允许列表签名」记忆化，不是每轮重写。
+- **插件自带的 MCP**：这些行不进注册表、也不是本插件挂的，**不能卸载** —— 只能靠守卫拒绝调用。所以它们在列表里单独分组（按 bundle 归属，认不出就是「未归属插件」）。
+- **批量**：POST /session-caps {kind:"mcp"|"skills", bulk:true, enabled} 一次只改一类；组级开关由客户端按组内名字逐个调用。
+- **scope 语义**：宿主的 SkillViewOptions.scope 直接吃 **agent 对象**，与本插件之外的消费者（dsh-tool-skill）一致。视图列的是「常驻 preset 层 ∪ 当前会话层」的并集（只取会话层会漏掉 filesystem 与随包技能，本机曾因此只显示 1 个技能）。
+- **接口**：GET /session-caps?session=<id>、POST /session-caps {session, kind, name, enabled} 或 {session, kind, bulk, enabled}；同一个 path 用方法分发。
+- **UI**：conversation.view（id capability、order 11、label「能力管理」），两段（MCP / 技能）× 每组（我的 MCP 服务器 / 插件 · 包名 / 系统）各带卡片与开关；注册包在 try/catch 里，宿主不认这个座位时只失去一个 tab，不会带崩外壳。
+- **测试**：test/session-caps-smoke.mjs（默认全关、允许即挂载/拒绝、守卫三分支、每类批量互不影响、跨会话隔离、失效上下文兜底、坏输入）。故障注入：默认放开 / 批量跨类型 / 去掉原生守卫，三条都会红。真机判读：分组与分段、组级开关、全关态 0/N 显示、无 console 异常。
+
 **问题**：能力库只能改全局配置。可「这个对话里我不想让它用 reqable」「这条会话先别给模型看这个技能」是会话级的诉求，改全局再改回来既麻烦又会波及其它对话。
 
 - **存储**：`dataDir/session-caps.json`，`{ [sessionId]: { mcp: [denied], skills: [denied] } }`（记拒绝项，默认全开）；空策略自动从文件删除。按会话 id 落盘，重开对话仍然生效。

@@ -35,6 +35,8 @@
     "lib/mcp-result.js",
     "lib/stdio-transport.js",
     "lib/skill.js",
+    "lib/skill-groups.js",
+    "lib/skills-import.js",
     "lib/session-audit.js",
     "lib/ui.js",
     "client/client.js",

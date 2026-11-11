@@ -1,42 +1,101 @@
-// Per-conversation capability policy: a conversation can drop individual MCP
-// servers and skills. Covers the four apply points that make the switch real —
-// catalog injection, eager/on-demand mounting, mcp_load/mcp_call, and the skill
-// loader guard — plus the persisted policy file and the session-layer shadow that
-// hides a denied skill from the catalog. The agent objects are the same fakes the
-// session-isolation test uses (no live harness needed).
+// Per-conversation capability policy: default CLOSED, per-kind bulk, plugin grouping.
+//
+// Covers every place that reads the policy — catalog injection, eager mounting,
+// mcp_load/mcp_call, the scoped pre-execute guard (skills and plugin-mounted MCP
+// tools) — plus the persisted allow list and the session-layer shadow that keeps a
+// switched-off skill out of the model-facing catalog.
 
 import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { apply } from "../lib/index.js";
 
-const tmp = join(process.cwd(), `.test-session-caps-${process.pid}`);
+const tmp = join(process.cwd(), ".test-session-caps-" + process.pid);
 const dataDir = join(tmp, "data");
 await rm(tmp, { recursive: true, force: true });
 await mkdir(dataDir, { recursive: true });
+// DSH_HOME is read when lib/index.js loads, so it must be set before the import —
+// otherwise the plugin bundle scan reads the real profiles (and their !!js tags).
+process.env.DSH_HOME = join(tmp, "home");
+const { apply } = await import("../lib/index.js");
 
 const entry = (name, tier) => ({
-  id: name, name, tier, transport: "stdio", command: "node", args: [], env: {}, cwd: null,
-  url: null, headers: {}, notes: "", tools: [{ name: "ping", description: "Ping" }], disabledTools: [],
+  id: name, name, tier, transport: "streamable-http", command: null, args: [], env: {}, cwd: null,
+  url: "http://127.0.0.1:1/", headers: {}, notes: "", tools: [{ name: "ping", description: "Ping" }], disabledTools: [],
   serverName: "", serverVersion: "", serverDescription: "fixture " + name, instructions: "",
   metaFetchedAt: "2026-01-01T00:00:00.000Z",
 });
-await writeFile(join(dataDir, "registry.json"), `${JSON.stringify({
+await writeFile(join(dataDir, "registry.json"), JSON.stringify({
   version: 1,
   entries: [entry("alpha", "on-demand"), entry("beta", "disabled")],
-}, null, 2)}\n`, "utf8");
+}, null, 2) + "\n", "utf8");
 
 const skills = {
-  "only-agent": { name: "only-agent", description: "Only visible in the conversation scope", path: join(tmp, "agent", "SKILL.md"), provider: "agent-notes", invocation: { modelInvocable: true, userInvocable: true }, content: "# agent" },
-  "only-standing": { name: "only-standing", description: "Only visible in the standing scope", path: join(tmp, "standing", "SKILL.md"), provider: "filesystem", invocation: { modelInvocable: true, userInvocable: true }, content: "# standing" },
+  "only-standing": { name: "only-standing", description: "Only in the standing scope", path: join(tmp, "standing", "SKILL.md"), provider: "filesystem", invocation: { modelInvocable: true, userInvocable: true }, content: "# standing" },
+  "only-conversation": { name: "only-conversation", description: "Only in the conversation scope", path: join(tmp, "conv", "SKILL.md"), provider: "agent-notes", invocation: { modelInvocable: true, userInvocable: true }, content: "# conv" },
   "skill-one": { name: "skill-one", description: "First fixture", path: join(tmp, "one", "SKILL.md"), provider: "filesystem", invocation: { modelInvocable: true, userInvocable: true }, content: "# one" },
-  "skill-two": { name: "skill-two", description: "Second fixture", path: join(tmp, "two", "SKILL.md"), provider: "filesystem", invocation: { modelInvocable: true, userInvocable: true }, content: "# two" },
+};
+
+const liveSkillsService = {
+  registerProvider() { return () => {}; },
+  // The standing scope (no scope option) is what 能力库 lists; a conversation scope
+  // only sees its own layer. The view must show the union, not one of them.
+  async list(options) {
+    const all = Object.values(skills).map((s) => ({ name: s.name, description: s.description, invocation: s.invocation, provider: s.provider }));
+    if (options?.scope !== undefined) return all.filter((s) => s.name !== "only-standing");
+    return all.filter((s) => s.name !== "only-conversation");
+  },
+  async get(name) { return skills[name]; },
+};
+
+// One plugin-mounted MCP row: the desktop app's loader owns these, so the plugin can
+// only refuse their calls per conversation, never unmount them.
+const fakeLoader = {
+  entries() {
+    return [{
+      id: "mcp-sequential",
+      disabled: false,
+      update() {},
+      options: { name: "@deepseek-ai/dsh-mcp-client", id: "mcp-sequential", config: { transport: "stdio", serverName: "sequential", command: "node", args: [] } },
+    }];
+  },
+};
+
+let deadSkills = false;
+const routes = [];
+const effects = [];
+const preSteps = [];
+const toolByName = new Map();
+const webServer = { register(route) { routes.push(route); return () => {}; } };
+const ctx = {
+  tools: { register(definition) { toolByName.set(definition.name, definition); return () => {}; } },
+  get skills() {
+    if (deadSkills) throw new Error('cannot get required service "skills" in inactive context');
+    return liveSkillsService;
+  },
+  on(event, handler) {
+    if (event === "agent/pre-step") preSteps.push(handler);
+    return () => {};
+  },
+  effect(fn) { const d = fn(); if (typeof d === "function") effects.push(d); return () => {}; },
+  inject(names, callback) {
+    const list = Array.isArray(names) ? names : [names];
+    if (list.includes("webServer")) callback(ctx);
+    if (list.includes("loader")) callback({ loader: fakeLoader });
+    return () => {};
+  },
+  webServer,
+  get(name) {
+    if (name === "webServer") return webServer;
+    if (name === "skills") return liveSkillsService;
+    return undefined;
+  },
+  logger: { warn() {}, error() {}, info() {} },
 };
 
 function makeAgent(sessionId) {
   const guards = [];
   const shadows = [];
   const disposed = [];
-  const agent = {
+  return {
     ctx: {
       tools: { register() { return () => {}; } },
       on(event, handler) {
@@ -51,49 +110,13 @@ function makeAgent(sessionId) {
       },
       effect(fn) { fn(); return () => {}; },
     },
-    session: { id: sessionId, surface: { nodes: [] }, eventAt: () => undefined },
+    session: { id: sessionId, seq: 0, surface: { nodes: [] }, eventAt: () => undefined },
     guards,
     shadows,
     disposed,
   };
-  return agent;
 }
 
-const routes = [];
-const effects = [];
-const toolByName = new Map();
-let deadSkills = false;
-const ctx = {
-  tools: { register(definition) { toolByName.set(definition.name, definition); return () => {}; } },
-  get skills() {
-    if (deadSkills) throw new Error('cannot get required service "skills" in inactive context');
-    return liveSkillsService;
-  },
-  get(name) {
-    if (name === "webServer") return { register(route) { routes.push(route); return () => {}; } };
-    if (name === "skills") return liveSkillsService;
-    return undefined;
-  },
-  _skills: {
-    registerProvider() { return () => {}; },
-    // Standing scope (no `scope`) is what 能力库 lists; an agent scope only sees
-    // its own layer. The view must show the union, not just one of them.
-    async list(options) {
-      const all = Object.values(skills).map((s) => ({ name: s.name, description: s.description, invocation: s.invocation, provider: s.provider }));
-      if (options?.scope !== undefined) return all.filter((s) => s.name !== "only-standing");
-      return all.filter((s) => s.name !== "only-agent");
-    },
-    async get(name) { return skills[name]; },
-  },
-  on(event, handler) {
-    if (event === "agent/pre-step") preSteps.push(handler);
-    return () => {};
-  },
-  effect(fn) { const d = fn(); if (typeof d === "function") effects.push(d); return () => {}; },
-  logger: { warn() {}, error() {}, info() {} },
-};
-const liveSkillsService = ctx._skills;
-const preSteps = [];
 const failed = [];
 const check = (condition, message) => { if (!condition) failed.push(message); };
 const routeByPath = (path) => routes.find((route) => route.path === path);
@@ -114,150 +137,159 @@ function makeRes() {
   return res;
 }
 const bodyOf = (res) => (res.body ? JSON.parse(res.body) : {});
-const capsRoute = () => routeByPath("/skill-mcp-manager/session-caps");
-
+async function caps(method, body) {
+  const res = makeRes();
+  const url = method === "GET"
+    ? "/skill-mcp-manager/session-caps?session=" + encodeURIComponent(body?.session ?? "sess-1")
+    : "/skill-mcp-manager/session-caps";
+  await routeByPath("/skill-mcp-manager/session-caps").handler(makeReq(method, url, body), res);
+  return { status: res.status, body: bodyOf(res) };
+}
 async function preStep(agent) {
-  const decision = { kind: "continue", messages: [] };
-  let captured = decision;
+  let captured = { kind: "continue", messages: [] };
   for (const listener of preSteps) {
     captured = await listener({ agent, signal: { throwIfAborted() {} } }, async () => captured);
   }
   return captured;
 }
+const catalogText = (decision) => (decision.messages ?? []).map((m) => m.content?.[0]?.text ?? "").join("\n");
 
 await apply(ctx, { dataDir, profile: "__test__", importNativeMcp: false });
 await new Promise((resolve) => setTimeout(resolve, 50));
 
 const agent = makeAgent("sess-1");
-check(capsRoute() !== undefined, "missing route /skill-mcp-manager/session-caps");
 
-// 1) the list: enabled entries only, everything allowed at first
+// 1) a fresh conversation starts with EVERYTHING off
 {
-  const res = makeRes();
-  await capsRoute().handler(makeReq("GET", "/skill-mcp-manager/session-caps?session=sess-1"), res);
-  const body = bodyOf(res);
-  console.log("initial:", JSON.stringify({ mcp: body.mcp?.map((m) => m.name + ":" + m.enabled), skills: body.skills?.map((s) => s.name + ":" + s.enabled) }));
+  // A pre-step is what registers this agent's live runtime; the view then lists the
+  // union of the standing scope and this conversation's own layer.
+  const decisionAtStart = await preStep(agent);
+  const res = await caps("GET", { session: "sess-1" });
+  console.log("initial:", JSON.stringify({ mcp: res.body.mcp?.map((m) => m.name + ":" + m.enabled), skills: res.body.skills?.map((s) => s.name + ":" + s.enabled) }));
   check(res.status === 200, "GET session-caps must answer 200");
-  check(!(body.mcp ?? []).some((m) => m.name === "beta"), "a globally disabled entry must not appear in the conversation view");
-  check((body.mcp ?? []).every((m) => m.enabled), "everything starts allowed");
-  check((body.skills ?? []).length === 3, "before the conversation runs, the view lists the standing scope, got " + JSON.stringify((body.skills ?? []).map((x) => x.name)));
-  check((body.skills ?? []).some((x) => x.name === "only-standing"), "a skill only visible in the standing scope must still be listed");
-  check(new Set((body.skills ?? []).map((x) => x.name)).size === (body.skills ?? []).length, "the union must not duplicate a name");
+  check(!(res.body.mcp ?? []).some((m) => m.name === "beta"), "a globally disabled entry must not appear");
+  check((res.body.mcp ?? []).length === 2, "the registry entry and the plugin row must both be listed, got " + JSON.stringify((res.body.mcp ?? []).map((m) => m.name)));
+  const pluginRow = (res.body.mcp ?? []).find((m) => m.source === "plugin");
+  check(pluginRow !== undefined && pluginRow.name === "sequential", "the plugin-mounted row must be listed by its server name");
+  check(pluginRow !== undefined && pluginRow.owner === "", "an unattributable plugin row keeps an empty owner (the page shows 未归属插件)");
+  check((res.body.mcp ?? []).every((m) => m.enabled === false), "every MCP server must start OFF");
+  check((res.body.skills ?? []).every((s) => s.enabled === false), "every skill must start OFF");
+  const names = (res.body.skills ?? []).map((s) => s.name);
+  check(names.length === 3, "the union of standing + conversation scopes must be listed, got " + JSON.stringify(names));
+  check(new Set(names).size === names.length, "the union must not duplicate a name");
+  check(catalogText(decisionAtStart) === "", "a fresh conversation must get no MCP catalog at all");
+  check(agent.shadows.length === 3, "every switched-off skill needs a shadow, got " + agent.shadows.length);
+  check(agent.shadows.every((s) => s.invocation?.modelInvocable === false), "shadows must be model-invisible");
 }
 
-// 2) deny one MCP server: catalog drops it, mcp_load refuses it, policy persisted
+// 2) turning one MCP server on mounts it into the catalog; mcp_load follows
 {
-  await preStep(agent);
-  const res = makeRes();
-  await capsRoute().handler(makeReq("POST", "/skill-mcp-manager/session-caps", { session: "sess-1", kind: "mcp", name: "alpha", enabled: false }), res);
-  const body = bodyOf(res);
-  console.log("deny alpha ->", res.status, JSON.stringify(body.mcp?.map((m) => m.name + ":" + m.enabled)));
-  check(res.status === 200 && body.mcp?.find((m) => m.name === "alpha")?.enabled === false, "alpha must read as disabled for this conversation");
+  const on = await caps("POST", { session: "sess-1", kind: "mcp", name: "alpha", enabled: true });
+  console.log("enable alpha ->", on.status, JSON.stringify(on.body.mcp?.map((m) => m.name + ":" + m.enabled)));
+  check(on.status === 200 && on.body.mcp?.find((m) => m.name === "alpha")?.enabled === true, "alpha must read as on");
   const saved = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
-  check((saved["sess-1"]?.mcp ?? []).includes("alpha"), "the policy must be persisted per session");
+  check((saved["sess-1"]?.mcp ?? []).includes("alpha"), "the allow list must be persisted per session");
   const decision = await preStep(agent);
-  const text = (decision.messages ?? []).map((m) => m.content?.[0]?.text ?? "").join("\n");
-  check(!text.includes("alpha"), "the catalog must not advertise a denied server");
-  check(text === "", "with nothing left visible there must be no catalog message at all");
-}
-
-// 3) mcp_load refuses a denied server in that conversation
-{
+  check(catalogText(decision).includes("alpha"), "the catalog must advertise an enabled server");
   const load = toolByName.get("mcp_load");
   check(load !== undefined, "mcp_load tool must be registered");
   if (load !== undefined) {
     let error = "";
-    try {
-      await load.execute({ name: "alpha" }, { agent, signal: { throwIfAborted() {} } });
-    } catch (err) {
-      error = String(err?.message ?? err);
-    }
-    console.log("mcp_load denied ->", error);
-    check(/disabled in this conversation/.test(error), "mcp_load must refuse a denied server, got: " + error);
+    try { await load.execute({ name: "alpha" }, { agent, signal: { throwIfAborted() {} } }); } catch (err) { error = String(err?.message ?? err); }
+    check(!/off for this conversation/.test(error), "mcp_load must not refuse an enabled server, got: " + error);
   }
 }
 
-// 3b) a dead ctx.skills getter must fall back to the live service
+// 3) turning it off again refuses it and drops it from the catalog
+{
+  const off = await caps("POST", { session: "sess-1", kind: "mcp", name: "alpha", enabled: false });
+  check(off.body.mcp?.find((m) => m.name === "alpha")?.enabled === false, "alpha must read as off again");
+  const load = toolByName.get("mcp_load");
+  let error = "";
+  try { await load.execute({ name: "alpha" }, { agent, signal: { throwIfAborted() {} } }); } catch (err) { error = String(err?.message ?? err); }
+  console.log("mcp_load off ->", error);
+  check(/off for this conversation/.test(error), "mcp_load must refuse a switched-off server, got: " + error);
+  const decision = await preStep(agent);
+  check(catalogText(decision) === "", "the catalog must not advertise a switched-off server");
+}
+
+// 4) the guard: skills and plugin-mounted MCP tools, scoped to this conversation
+{
+  const guard = agent.guards[0];
+  check(guard !== undefined, "a pre-execute guard must be registered on the agent context");
+  const skillOff = await guard({ name: "skill", arguments: { name: "skill-one" } }, async () => "allow");
+  const nativeOff = await guard({ name: "mcp__sequential__think" }, async () => "allow");
+  const otherTool = await guard({ name: "shell", arguments: {} }, async () => "allow");
+  console.log("guard off:", skillOff, nativeOff, otherTool);
+  check(skillOff === "deny", "a switched-off skill must be denied");
+  check(nativeOff === "deny", "a switched-off plugin-mounted MCP tool must be denied");
+  check(otherTool === "allow", "the guard must not touch unrelated tools");
+
+  await caps("POST", { session: "sess-1", kind: "skills", name: "skill-one", enabled: true });
+  await caps("POST", { session: "sess-1", kind: "mcp", name: "sequential", enabled: true });
+  const skillOn = await guard({ name: "skill", arguments: { name: "skill-one" } }, async () => "allow");
+  const nativeOn = await guard({ name: "mcp__sequential__think" }, async () => "allow");
+  console.log("guard on:", skillOn, nativeOn);
+  check(skillOn === "allow", "an enabled skill must be allowed");
+  check(nativeOn === "allow", "an enabled plugin MCP tool must be allowed");
+}
+
+// 5) bulk is PER KIND: enabling all MCP must not touch the skills
+{
+  await caps("POST", { session: "sess-1", kind: "skills", name: "skill-one", enabled: false });
+  const bulk = await caps("POST", { session: "sess-1", kind: "mcp", bulk: true, enabled: true });
+  console.log("bulk mcp on ->", bulk.status, JSON.stringify({ mcp: bulk.body.mcp?.map((m) => m.name + ":" + m.enabled), skills: bulk.body.skills?.map((s) => s.name + ":" + s.enabled) }));
+  check(bulk.status === 200, "bulk must answer 200");
+  check((bulk.body.mcp ?? []).every((m) => m.enabled === true), "bulk mcp on must enable every MCP server");
+  check((bulk.body.skills ?? []).every((s) => s.enabled === false), "bulk mcp on must NOT enable any skill");
+
+  const bulkOff = await caps("POST", { session: "sess-1", kind: "mcp", bulk: true, enabled: false });
+  check((bulkOff.body.mcp ?? []).every((m) => m.enabled === false), "bulk mcp off must disable every MCP server");
+  const saved = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
+  check((saved["sess-1"]?.mcp ?? []).length === 0, "an empty MCP allow list must leave no names behind, got " + JSON.stringify(saved["sess-1"]?.mcp));
+
+  const bulkSkills = await caps("POST", { session: "sess-1", kind: "skills", bulk: true, enabled: true });
+  check((bulkSkills.body.skills ?? []).every((s) => s.enabled === true), "bulk skills on must enable every skill");
+  check((bulkSkills.body.skills ?? []).length === 3, "bulk skills must cover the whole union, got " + (bulkSkills.body.skills ?? []).length);
+  const after = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
+  check((after["sess-1"]?.skills ?? []).length === 3, "every enabled skill must be persisted, got " + JSON.stringify(after["sess-1"]?.skills));
+  const cleared = await caps("POST", { session: "sess-1", kind: "skills", bulk: true, enabled: false });
+  check((cleared.body.skills ?? []).every((s) => s.enabled === false), "bulk skills off must disable every skill");
+  const empty = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
+  check(empty["sess-1"] === undefined, "a session with nothing enabled must be dropped from the file, got " + JSON.stringify(empty));
+}
+
+// 6) a per-session decision never leaks into another conversation
+{
+  await caps("POST", { session: "sess-1", kind: "mcp", name: "alpha", enabled: true });
+  const other = await caps("GET", { session: "sess-2" });
+  check((other.body.mcp ?? []).every((m) => m.enabled === false), "another conversation must still start closed");
+  const decision = await preStep(makeAgent("sess-2"));
+  check(catalogText(decision) === "", "another conversation must get no catalog");
+}
+
+// 7) a dead ctx.skills getter falls back to the live service
 {
   deadSkills = true;
-  const res = makeRes();
-  await capsRoute().handler(makeReq("GET", "/skill-mcp-manager/session-caps?session=sess-1"), res);
-  const body = bodyOf(res);
-  console.log("dead ctx.skills ->", res.status, "skills:", (body.skills ?? []).length);
+  const res = await caps("GET", { session: "sess-1" });
+  console.log("dead ctx.skills ->", res.status, "skills:", (res.body.skills ?? []).length);
   check(res.status === 200, "an inactive ctx.skills must not break the view");
-  check((body.skills ?? []).some((x) => x.name === "only-agent"), "a skill only visible in the conversation scope must be listed once it is live");
-  check((body.skills ?? []).length === 4, "the fallback lookup must list the union once the conversation is live, got " + (body.skills ?? []).length);
+  check((res.body.skills ?? []).length === 3, "the fallback lookup must still list the skills, got " + (res.body.skills ?? []).length);
   deadSkills = false;
 }
 
-// 4) deny one skill: the scoped guard refuses it, the shadow hides it
+// 8) bad input is refused
 {
-  const res = makeRes();
-  await capsRoute().handler(makeReq("POST", "/skill-mcp-manager/session-caps", { session: "sess-1", kind: "skills", name: "skill-one", enabled: false }), res);
-  console.log("deny skill ->", res.status, JSON.stringify(bodyOf(res).skills?.map((s) => s.name + ":" + s.enabled)));
-  await preStep(agent);
-  check(agent.guards.length === 1, "exactly one pre-execute guard per agent, got " + agent.guards.length);
-  const guard = agent.guards[0];
-  const denied = await guard({ name: "skill", arguments: { name: "skill-one" } }, async () => "allow");
-  const allowed = await guard({ name: "skill", arguments: { name: "skill-two" } }, async () => "allow");
-  const otherTool = await guard({ name: "mcp_load", arguments: { name: "skill-one" } }, async () => "allow");
-  console.log("guard:", denied, allowed, otherTool);
-  check(denied === "deny", "the guard must deny a denied skill");
-  check(allowed === "allow", "the guard must pass an allowed skill through");
-  check(otherTool === "allow", "the guard must not touch other tools");
-  check(agent.shadows.some((s) => s.name === "skill-one" && s.invocation?.modelInvocable === false), "a shadow with modelInvocable=false must be registered");
-  const decision = await preStep(agent);
-  check((decision.messages ?? []).every((m) => !String(m.content?.[0]?.text ?? "").includes("mcp-catalog")), "skill policy must not touch the MCP catalog");
-}
-
-// 5) re-enabling everything restores the previous state and clears the shadows
-{
-  for (const [kind, name] of [["mcp", "alpha"], ["skills", "skill-one"]]) {
-    const res = makeRes();
-    await capsRoute().handler(makeReq("POST", "/skill-mcp-manager/session-caps", { session: "sess-1", kind, name, enabled: true }), res);
-    check(res.status === 200, `re-enabling ${kind}/${name} must answer 200`);
-  }
-  await preStep(agent);
-  console.log("after restore: disposed=", agent.disposed.join(","), "| guards=", agent.guards.length);
-  check(agent.disposed.includes("skill-one"), "re-enabling must dispose the shadow");
-  const saved = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
-  check(saved["sess-1"] === undefined, "an empty policy must be dropped from the file");
-  const decision = await preStep(agent);
-  const text = (decision.messages ?? []).map((m) => m.content?.[0]?.text ?? "").join("\n");
-  check(text.includes("alpha"), "the catalog must advertise the server again");
-}
-
-// 6) one-click: bulk off removes both kinds, bulk on restores them
-{
-  const off = makeRes();
-  await capsRoute().handler(makeReq("POST", "/skill-mcp-manager/session-caps", { session: "sess-1", bulk: true, enabled: false }), off);
-  const body = bodyOf(off);
-  console.log("bulk off ->", off.status, JSON.stringify({ mcp: body.mcp?.map((m) => m.name + ":" + m.enabled), skills: body.skills?.map((x) => x.name + ":" + x.enabled) }));
-  check(off.status === 200, "bulk off must answer 200");
-  check((body.mcp ?? []).every((m) => m.enabled === false), "bulk off must disable every MCP server");
-  check((body.skills ?? []).every((x) => x.enabled === false), "bulk off must disable every skill");
-  const saved = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
-  check((saved["sess-1"]?.mcp ?? []).includes("alpha"), "bulk off must persist the MCP denials");
-  check((saved["sess-1"]?.skills ?? []).length === 4, "bulk off must persist every skill denial (4 fixtures), got " + JSON.stringify(saved["sess-1"]?.skills));
-  const guard = agent.guards[0];
-  const denied = await guard({ name: "skill", arguments: { name: "skill-two" } }, async () => "allow");
-  check(denied === "deny", "after bulk off the guard must deny any skill");
-
-  const on = makeRes();
-  await capsRoute().handler(makeReq("POST", "/skill-mcp-manager/session-caps", { session: "sess-1", bulk: true, enabled: true }), on);
-  const restored = bodyOf(on);
-  console.log("bulk on ->", on.status, JSON.stringify({ mcp: restored.mcp?.map((m) => m.name + ":" + m.enabled), skills: restored.skills?.map((x) => x.name + ":" + x.enabled) }));
-  check((restored.mcp ?? []).every((m) => m.enabled === true), "bulk on must enable every MCP server");
-  check((restored.skills ?? []).every((x) => x.enabled === true), "bulk on must enable every skill");
-  const savedAfter = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
-  check(savedAfter["sess-1"] === undefined, "bulk on must clear the session from the policy file");
-  const allowed = await guard({ name: "skill", arguments: { name: "skill-two" } }, async () => "allow");
-  check(allowed === "allow", "after bulk on the guard must allow the skill again");
+  const badKind = await caps("POST", { session: "sess-1", kind: "nope", name: "alpha", enabled: true });
+  check(badKind.status === 400, "an unknown kind must be refused");
+  const badSession = await caps("POST", { kind: "mcp", name: "alpha", enabled: true });
+  check(badSession.status === 400, "a missing session must be refused");
+  const unknown = await caps("POST", { session: "sess-1", kind: "mcp", name: "nope", enabled: true });
+  check(unknown.status === 400, "an unknown MCP name must be refused");
 }
 
 for (const disposer of effects) { try { await disposer(); } catch { /* best effort */ } }
 await rm(tmp, { recursive: true, force: true });
-
 if (failed.length > 0) {
   for (const line of failed) console.log("FAIL:", line);
   console.log("SESSION CAPS SMOKE FAILED");
