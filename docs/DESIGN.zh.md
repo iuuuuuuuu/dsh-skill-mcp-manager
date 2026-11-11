@@ -95,6 +95,7 @@ tmp/               # 插件内部临时文件（AI 不直接引用；无 args_fi
 
 ### 4.2 展示与编辑（已定，简化为系统编辑器）
 
+- **残留进程**：MCP 页头部的「清理残留进程」是两步动作（先扫描列出、再确认结束），见 §5.15。
 - **插件注入的 MCP** 在同一页：宿主已认领的 registry 条目排在「系统」组；`loader` 里被某个 bundle 声明的 `dsh-mcp-client` 行归到「插件 · <bundle>」组（默认折叠、组头总开关、卡片单条开关），开关即时生效且不需要重启（`entry.update`）。头部的计数会额外显示「插件 MCP N」。
   - **分组**：按来源分「系统」+ 每个插件一组。`provider` 是唯一判据（`filesystem` / `skill-mcp-manager-recursive` → 系统；其余 → 插件），路径只用来认包名（先查 `node_modules` / `app.asar` 段，再向上找最近的 `package.json`，且要求技能在 `<pkg>/skills/` 下，避免把用户仓库的 package.json 当成归属）。插件组默认折叠；组头总开关调用 `POST /skills/toggle-group`，把该 `provider` 下所有**可写**技能一次写成 `disable-model-invocation: true`，随包只读的跳过并在回执里列出（`skipped`），全组只读时开关置灰。
 - **SKILL 管理抽屉**：列出所有 SKILL 的 **名字 / 描述 / 路径**（组内仍按路径排序）。
@@ -309,6 +310,15 @@ tmp/               # 插件内部临时文件（AI 不直接引用；无 args_fi
 - **决策：只扫描提示，不做修复**。扫描是插件该干的（判定成本低、结论稳定），修复不是（一次性的数据手术、每个库的形态都不同）。所以插件不附带修复脚本、不提供修复命令、不做自动修复；用户拿到报错后交给 AI 处理。同理，其它出口（如 `/mcp` 命令输出）不重复播报这条告警——提示只在设置页横幅与浮层各出现一次。
 - **测试**：`test/session-audit-smoke.mjs`（候选筛选、三种形状、正文转义提及不误判、已修形态判干净、明文日志、受影响保持重扫、扫到 0 退休、退休后不重写记录、空库立即退休、缺失根目录不报错、`running()` 只在扫描真在跑时为真、客户端契约与"三种提示各用各的标记、横幅不读浮层标记"的字符串守卫）。
 
+### 5.15 残留 MCP 子进程清理（`lib/orphans.js`）
+
+**问题**：stdio MCP 每次异常退出或重启，都可能在系统里留下整条 `npx → cmd → node` 链；本机一次累积 40 个（历次重启 + 那次重复 serverName 的失败激活）。它们不连任何会话、白占内存，用户却只能去任务管理器里猜哪几个是 MCP。
+
+- **签名**：候选只来自本插件管理的命令 —— 注册表 stdio 条目 + 插件注入的 loader 行。通用解释器（`node`/`npx`/`cmd`/`python`/`pwsh`…）**不贡献裸名字**，只取「看起来像路径或 npm 包」的参数（`…/server-sequential-thinking/dist/index.js`、`@modelcontextprotocol/server-foo`）；专用二进制（`mcp-server.exe`）贡献完整路径 + basename。裸 `node` 当签名会匹配一切。
+- **存活保护**：进程或它的任一祖先若是运行中的 DSH（`DSH Tauri.exe` / `deepseek-harness-desktop` / `dsh/lib/bin.js` / `dsh-app-boot`），一律保留 —— 这条同时保护当前实例、其它正在跑的实例，以及调用方自己（`selfPid` 单独跳过）。没有它，点一下就会把用户正在用的 MCP 连接打死。
+- **两步**：`POST /mcp/orphans {confirm?: false}` 只返回候选（pid / name / 命中的签名 / 被保留的数量），`confirm: true` 才真杀：先 `SIGTERM`，1.5s 后对仍存活的补 `SIGKILL`。UI 先列 pid，确认按钮才可点。
+- **跨平台**：Windows 用 `Get-CimInstance Win32_Process`（`ps-list` / `tasklist` 系在 Windows 上拿不到命令行，实测 615 个进程里 0 个带 cmd），POSIX 用 `ps -eo pid=,ppid=,args=`。匹配与保护判定是纯函数，单测喂固定进程表。
+- **测试**：`test/orphan-cleanup-smoke.mjs`（签名特异性、存活链保留、孤儿识别、空签名不误杀、路径归一化）；真机验证用 WMI 造一个父进程不在 DSH 下的孤儿 → 扫描列出 → 确认后 PID 消失，同时另一个挂在 DSH 下的进程存活。
 ### 5.14 插件注入的 MCP 行（分组 + 热开关）
 
 **问题**：bundle 可以在自己的 `cordis.patch.yml` 里 `insert` 一条 `@deepseek-ai/dsh-mcp-client` 行（box 就是这样）。这类行不进 registry —— `reconcile` 只读 profile patch，而 profile patch 里同 id 的 modifier 行盖不住 bundle 的 insert（实测 `--dump-config` 里 `disabled` 不生效）。于是它们既不在能力库里显示，也关不掉。

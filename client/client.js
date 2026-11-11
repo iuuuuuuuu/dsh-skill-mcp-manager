@@ -565,6 +565,10 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [native, setNative] = useState({ supported: false, entries: [] });
     const [openGroups, setOpenGroups] = useState({});
     const [busyNative, setBusyNative] = useState("");
+    // Residual MCP child processes (left behind by earlier restarts). The scan is
+    // a dry run: the list is shown first, killing is a separate confirmation.
+    const [orphans, setOrphans] = useState(null);
+    const [scanningOrphans, setScanningOrphans] = useState(false);
 
     const refresh = useCallback(async (rv) => {
       setLoading(true);
@@ -760,6 +764,44 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       const last = entry.lastCheck;
       if (live === undefined && last !== null && last !== undefined && last.ok === false && last.error) return String(last.error);
       return "";
+    }
+
+    // Residual-process cleanup is two steps: scan (dry run) then confirm.
+    async function scanOrphans() {
+      setScanningOrphans(true);
+      try {
+        const data = await postJson("/skill-mcp-manager/mcp/orphans", { confirm: false });
+        const candidates = data.candidates || [];
+        const live = data.live || [];
+        if (candidates.length === 0) {
+          setOrphans(null);
+          setNotice("没有残留的 MCP 子进程（正在使用的 " + live.length + " 个都保留）");
+        } else {
+          setOrphans({ candidates, live });
+        }
+      } catch (err) {
+        setError(errText(err));
+      } finally {
+        setScanningOrphans(false);
+      }
+    }
+
+    async function confirmOrphans() {
+      if (orphans === null) return;
+      setScanningOrphans(true);
+      try {
+        const data = await postJson("/skill-mcp-manager/mcp/orphans", { confirm: true });
+        const killed = (data.killed || []).length;
+        const failed = (data.failed || []).length;
+        setNotice("已结束 " + killed + " 个残留进程"
+          + (failed > 0 ? "（" + failed + " 个没能结束）" : "")
+          + "，保留正在使用的 " + (data.live || []).length + " 个");
+        setOrphans(null);
+      } catch (err) {
+        setError(errText(err));
+      } finally {
+        setScanningOrphans(false);
+      }
     }
 
     // Plugin-contributed rows: toggled through the host's loader at runtime, so the
@@ -1045,6 +1087,13 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
             disabled: testingAll || !entries || entries.length === 0,
             onClick: checkAll,
           }, testingAll ? "检测中 " + progress.done + "/" + progress.total : "全部检测"),
+          h("button", {
+            type: "button",
+            className: "smx-btn",
+            disabled: scanningOrphans,
+            onClick: scanOrphans,
+            title: "结束上次运行残留的 MCP 子进程（正在使用的会保留）",
+          }, scanningOrphans ? "扫描中\u2026" : "清理残留进程"),
           h("button", { type: "button", className: "smx-btn", onClick: toggleReveal }, reveal ? "隐藏密钥" : "显示密钥"),
           h("button", { type: "button", className: "smx-btn", onClick: () => refresh(reveal) }, "刷新"),
         ),
@@ -1090,6 +1139,28 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       ),
       notice ? h(Notice, { kind: "success", onDismiss: () => setNotice("") }, notice) : null,
       error ? h(Notice, { kind: "error", onDismiss: () => setError("") }, error) : null,
+      orphans
+        ? h("div", { className: "smx-settings-card" },
+            h("div", { className: "smx-settings-card__title" },
+              "发现 " + orphans.candidates.length + " 个残留 MCP 子进程"),
+            h("ul", { className: "smx-tools" },
+              orphans.candidates.slice(0, 8).map((item) => h("li", { key: item.pid, className: "smx-tool" },
+                h("span", { className: "smx-tool__name" }, String(item.pid)),
+                h("span", { className: "smx-tool__desc" }, item.name + " \u00b7 " + item.matched),
+              )),
+            ),
+            orphans.candidates.length > 8
+              ? h("span", { className: "smx-count" }, "仅列出前 8 个，共 " + orphans.candidates.length + " 个")
+              : null,
+            h("div", { className: "smx-detail__actions" },
+              h("button", { type: "button", className: "smx-btn smx-btn--danger", disabled: scanningOrphans, onClick: confirmOrphans },
+                "确认结束 " + orphans.candidates.length + " 个"),
+              h("button", { type: "button", className: "smx-btn", onClick: () => setOrphans(null) }, "取消"),
+            ),
+            h("span", { className: "smx-count" },
+              "属于运行中 DSH 的 " + orphans.live.length + " 个进程会保留"),
+          )
+        : null,
       loading ? h(Empty, null, "加载中\u2026")
         : (entries || []).length === 0 && nativeEntries.length === 0
           ? h(Empty, null, "没有已注册的 MCP 服务器")
