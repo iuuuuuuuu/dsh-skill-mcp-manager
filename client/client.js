@@ -265,6 +265,32 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
   // Cards, not rows. Each skill is one self-contained tile: its identity, its
   // path and whether the model can see it are readable without reading across a
   // table, and the actions belong to the tile they act on.
+  // Grouping keys. The host sends `origin`; when it does not (a newer client
+  // against an older host — the desktop shell can reload the client bundle
+  // without restarting the host), derive the same answer from the provider: a
+  // named provider is a plugin, `filesystem` / this plugin's own recursive scan
+  // are the user's own directories.
+  const SYSTEM_SKILL_PROVIDERS = { "": true, filesystem: true, "skill-mcp-manager-recursive": true };
+  const PACKAGE_IN_PATH_RE = /[\\/](?:app\.asar[^\\/]*|node_modules)[\\/]((?:@[^\\/]+[\\/])?[^\\/]+)/;
+
+  function originOf(skill) {
+    if (skill.origin && typeof skill.origin === "object") return skill.origin;
+    const provider = typeof skill.provider === "string" ? skill.provider : "";
+    const path = typeof skill.path === "string" ? skill.path : "";
+    if (SYSTEM_SKILL_PROVIDERS[provider] === true) {
+      return { kind: "system", key: "system", label: "系统", provider, package: null, runtime: false };
+    }
+    const match = PACKAGE_IN_PATH_RE.exec(path);
+    return {
+      kind: "plugin",
+      key: provider,
+      label: provider,
+      provider,
+      package: match === null ? null : match[1].replace(/[\\/]/g, "/"),
+      runtime: /dsh-acl-skill-/.test(path),
+    };
+  }
+
   function SkillsPanel() {
     const [skills, setSkills] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -329,7 +355,25 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     async function toggleGroup(group, enabled) {
       setBusyGroup(group.key);
       try {
-        const data = await postJson("/skill-mcp-manager/skills/toggle-group", { provider: group.provider, enabled });
+        let data;
+        try {
+          data = await postJson("/skill-mcp-manager/skills/toggle-group", { provider: group.provider, enabled });
+        } catch (groupError) {
+          // Older hosts have no batch route: do the same work one skill at a time
+          // instead of leaving the switch dead.
+          const updatedItems = [];
+          const skippedItems = [];
+          for (const skill of group.skills) {
+            if (skill.readonly) {
+              skippedItems.push(skill.name);
+              continue;
+            }
+            await postJson("/skill-mcp-manager/skills/toggle", { name: skill.name, enabled });
+            updatedItems.push({ name: skill.name, modelInvocable: enabled });
+          }
+          if (updatedItems.length === 0 && skippedItems.length === 0) throw groupError;
+          data = { updated: updatedItems, skipped: skippedItems };
+        }
         const updated = new Map((data.updated || []).map((item) => [item.name, item.modelInvocable]));
         setSkills((current) => current && current.map((item) =>
           updated.has(item.name) ? { ...item, modelInvocable: updated.get(item.name) } : item));
@@ -391,7 +435,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     {
       const byKey = new Map();
       for (const skill of skills || []) {
-        const origin = skill.origin || { kind: "system", key: "system", label: "系统", provider: "", package: null, runtime: false };
+        const origin = originOf(skill);
         let group = byKey.get(origin.key);
         if (group === undefined) {
           group = {
@@ -1141,7 +1185,9 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
   }
 
   function ManagerSection() {
-    const [tab, setTab] = useState("skills");
+    // MCP is what people come here for (and what the sidebar page opens on); the
+    // skill tab is one click away.
+    const [tab, setTab] = useState("mcp");
     return h("div", { className: "smx" },
       h("header", { className: "smx-header" },
         h("h2", { className: "smx-title" }, "能力库 (Capability)"),
