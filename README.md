@@ -18,7 +18,11 @@ SKILL management
 
 Which Skills **and** MCPs are installed? Are they enabled? What does each one do? All visible directly in the settings page — **no digging through layers**. Skills and MCPs render as cards: name, path/transport, tool count, tier and current status at a glance, with the actions belonging to that card. Long content (env, headers, the tool list) moved into a side detail drawer instead of stretching the list into a wall. Enable/disable and delete MCPs and Skills from the UI, and click a SKILL to view its source (opens with your local default markdown reader). Each MCP tool can also be enabled or disabled independently; a disabled tool cannot be called by the AI and does not affect other tools on the same server.
 
-### 1.1 MCP connection checks
+### 1.1 Sidebar entry
+
+The capability library is not settings-only: the sidebar gets a “能力库” row (right under Plugins), and one click opens the same card UI as a full page in the main area — no settings dialog needed. Hosts that predate that seat simply do not show the row, and the settings entry keeps working.
+
+### 1.2 MCP connection checks
 
 Every MCP card has a **Check** button, and the tab header has **Check all**: it opens one real connection using the configured transport (spawns the stdio process / performs the HTTP handshake) and reports whether it connected, how long the handshake took, and how many tools the server actually exposes. On failure the server's own words appear on the card. The result is recorded with a timestamp, so a card can show “last connected · 371 ms · 2 minutes ago” or “last failed · 5 minutes ago” after a reload. A check only probes: it never rewrites the tool snapshot (that is **Refresh snapshot**) and never touches a running session instance. Timeout defaults to 15s (`checkTimeoutMs`) — shorter than a trial connect, because a person is waiting.
 

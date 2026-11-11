@@ -9,6 +9,8 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
   const { useState, useEffect, useCallback } = React;
 
   const name = "dsh-skill-mcp-manager";
+  // Sidebar page id: the `main` panel key and the `sidebar.panellist` row id.
+  const PANEL_ID = "skill-mcp-manager";
   const inject = ["slots"];
 
   // ── fetch ────────────────────────────────────────────────────────────────
@@ -924,9 +926,42 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     );
   }
 
+  // ── sidebar page ─────────────────────────────────────────────────────────
+  // The same manager, as a page of its own: the host's sidebar row selects the
+  // `main` panel, so a click on 能力库 lands here instead of inside the settings
+  // dialog. The content is ManagerSection unchanged — two renderings of one
+  // component, not two implementations of one feature.
+  function CapabilityPage() {
+    return h("div", { className: "smx-page" },
+      h("div", { className: "smx-page__body" }, h(ManagerSection)),
+    );
+  }
+
+  // Two stacked cards: the sidebar's own rows are line icons at 16px, so this
+  // borrows currentColor and the same optical weight rather than a colored logo.
+  function CapabilityIcon(props) {
+    const size = typeof props.size === "number" && props.size > 0 ? props.size : 16;
+    return h("svg", {
+      width: size,
+      height: size,
+      viewBox: "0 0 16 16",
+      fill: "none",
+      "aria-hidden": "true",
+      "data-dsh-part": "capability-sidebar-icon",
+    },
+      h("rect", { x: 1.9, y: 2.4, width: 8.8, height: 6.2, rx: 1.5, stroke: "currentColor", strokeWidth: 1.25 }),
+      h("rect", { x: 5.3, y: 7.4, width: 8.8, height: 6.2, rx: 1.5, stroke: "currentColor", strokeWidth: 1.25, fill: "var(--dsw-alias-bg-layer-1)" }),
+    );
+  }
+
   // ── CSS ──────────────────────────────────────────────────────────────────
   const CSS = [
     ".smx { display:flex; flex-direction:column; gap:12px; min-width:0; }",
+    // Sidebar page: the host gives the panel the full main area and reserves a
+    // top band for the frame; the body keeps a centered reading column and owns
+    // its own scrolling.
+    ".smx-page { display:flex; flex-direction:column; box-sizing:border-box; height:100%; min-height:0; padding-top:calc(28px + var(--dsh-frame-top-clearance,0px)); }",
+    ".smx-page__body { display:flex; flex-direction:column; flex:1; min-height:0; overflow:auto; padding-bottom:28px; padding-left:max(max(16px,min(4vw,48px)),50% - 480px); padding-right:max(max(16px,min(4vw,48px)),50% - 480px); }",
     ".smx-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }",
     ".smx-title { margin:0; font-size:15px; font-weight:600; color:var(--dsw-alias-label-primary); }",
     ".smx-head__meta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }",
@@ -1057,6 +1092,46 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       id: "capability-legacy-sessions",
       order: 80,
     }, LegacySessionOverlay));
+
+    // Sidebar page: a row in the host's panel list plus the `main` panel it
+    // selects. Both seats are the host's own and are declared lazily — a host
+    // that predates them simply never injects, and the settings section above
+    // stays the only entry. Register the row last and undo the panel if it is
+    // refused, so a half-registered page (a panel nothing can select) cannot
+    // outlive the failure.
+    let layout = null;
+    ctx.inject(["layout"], (scoped) => {
+      layout = scoped.layout;
+    });
+    ctx.slots.inject("main", () => ctx.slots.inject("sidebar.panellist", () => {
+      const stopMain = ctx.slots.register({
+        name: "main",
+        key: PANEL_ID,
+      }, () => h(CapabilityPage));
+      let stopRow;
+      try {
+        stopRow = ctx.slots.register({
+          name: "sidebar.panellist",
+          id: PANEL_ID,
+          order: 5,
+          label: "能力库",
+        }, (owner) => h(CapabilityIcon, { size: owner && owner.size }));
+      } catch (error) {
+        if (typeof stopMain === "function") stopMain();
+        throw error;
+      }
+      return () => {
+        // A panel the host still has selected after it disappears would render
+        // an empty main area; leave the page first.
+        try {
+          if (layout !== null && layout.panelInfo.getSnapshot().activePanelId === PANEL_ID) layout.selectPanel(null);
+        } catch {
+          /* layout service already gone */
+        }
+        if (typeof stopRow === "function") stopRow();
+        if (typeof stopMain === "function") stopMain();
+      };
+    }));
   }
 
   return { name, inject, apply };

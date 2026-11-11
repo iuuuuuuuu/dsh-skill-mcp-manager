@@ -8,6 +8,7 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 - **MCP 连接检测（卡片上的「检测」+ 头部「全部检测」）**：用条目自己配置的传输方式做一次**真握手**（stdio 起子进程、streamable-http 走 HTTP），回传是否连通、握手耗时、服务器本次实际暴露的工具数，以及服务器自报名。失败也是答案而不是 HTTP 错误：传输层/服务器原话直接显示在卡片上（默认截断，悬停看全文），因为「配置到底还能不能连」这个问题，工具快照回答不了——快照可能是一个月前的。结果按条目记进 `registry.json` 的 `lastCheck{at,ok,latencyMs,toolCount,serverName,toolsDiffer,error}`，所以重开页面也能看到「上次连通 · 371 ms · 2 分钟前」/「上次失败 · 5 分钟前」。检测**只探活**：不改写 `tools` 快照（刷新快照仍是单独动作，卡片在 `toolsDiffer` 时提示「工具已变化，建议刷新快照」）、不碰运行中的会话实例、不改 `eagerConnectFailed`（那是常驻注册在本进程里的状态）。超时用新配置项 `checkTimeoutMs`（默认 15s，短于 30s 试连：这次是人在等）。管理页一次最多并发 3 个检测，避免「全部检测」瞬间拉起十个子进程。检测失败的错误文本会落盘再回浏览器，所以**敏感值（敏感 env、headers、URL）在离开 Host 前被替换成掩码**（`reveal=1` 才给原文）。测试：`test/mcp-check-smoke.mjs`（真起两个 stdio fixture：一个正常服务器验连通/工具数/快照不被改写/落盘，一个立即退出的验失败答案；未知名字仍 400；掩码与 reveal 双向断言）。
 - **新配置项 `checkTimeoutMs`（默认 `15000`）**：管理页检测的超时，只影响 UI 探活，不影响注册试连（`trialTimeoutMs`）与工具调用（`toolCallTimeoutMs`）。
+- **侧边栏入口（能力库作为独立页面）**：注册宿主的 `sidebar.panellist` 行（位于「插件」与「自动化任务」之间，16px 双层卡片线条图标）+ 它选中的 `main` 面板（key = `skill-mcp-manager`），点侧边栏那一行直接在主区域打开能力库，不再只能钻进设置弹窗。页面渲染的就是设置页那一个 `ManagerSection`（一份实现两处渲染），页面容器补上宿主主区域的顶带留白与居中列宽（`calc(28px + var(--dsh-frame-top-clearance))` 与 `50% - 480px`），实测 1158px 宽下卡片三列。两个座位都是宿主的**可选** slot：老宿主不声明它们时 `slots.inject` 不触发，设置页那条入口照旧工作，不会因为找不到座位而报错；注册顺序是先 `main` 面板、后侧边栏行，行被拒就撤掉面板（不留下「没人能选中的页面」）；插件卸载/禁用时若当前正停在该面板，先用 `layout.selectPanel(null)` 离开再撤座位，避免宿主留着一个空主区域。
 
 ### Changed
 
