@@ -156,6 +156,42 @@ if (groupRoute === undefined) failed.push("missing route /skill-mcp-manager/skil
   }
 }
 
+// 6) a deactivated plugin context must read as something a person can act on:
+// the desktop shell can leave routes serving from a fiber that is no longer
+// active, and cordis' raw "inactive context" error says nothing to a user.
+{
+  const liveSkills = {
+    registerProvider() { return () => {}; },
+    async list() { return [{ name: "late", description: "late fixture" }]; },
+    async get() { return undefined; },
+  };
+  let active = true;
+  const lateCtx = {
+    tools: { register() { return () => {}; } },
+    get skills() {
+      if (!active) throw new Error('cannot get required service "skills" in inactive context');
+      return liveSkills;
+    },
+    on() { return () => {}; },
+    effect() { return () => {}; },
+    get() { return undefined; },
+    logger: { warn() {}, error() {}, info() {} },
+  };
+  const lateRoutes = [];
+  lateCtx.get = (name) => (name === "webServer" ? { register(route) { lateRoutes.push(route); return () => {}; } } : undefined);
+  const lateDir = join(tmp, "data-late");
+  await mkdir(lateDir, { recursive: true });
+  await apply(lateCtx, { dataDir: lateDir, profile: "__test__", importNativeMcp: false });
+  active = false; // the fiber stops being active; the route is still mounted
+  const res = makeRes();
+  await lateRoutes.find((route) => route.path === "/skill-mcp-manager/skills").handler(makeReq("GET", "/skill-mcp-manager/skills"), res);
+  const body = bodyOf(res);
+  console.log("deactivated ctx ->", res.status, JSON.stringify(body));
+  if (res.status !== 400) failed.push("a deactivated context must answer 400");
+  if (!String(body.error ?? "").includes("重启 DSH")) failed.push("the inactive-context error must be translated into something actionable, got " + String(body.error));
+  if (String(body.error ?? "").includes("inactive context")) failed.push("the raw cordis message must not leak to the page");
+}
+
 for (const disposer of effects) { try { await disposer(); } catch { /* best effort */ } }
 await rm(tmp, { recursive: true, force: true });
 
