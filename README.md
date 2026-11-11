@@ -22,7 +22,11 @@ Which Skills **and** MCPs are installed? Are they enabled? What does each one do
 
 The skills page groups by who provides the skill: a 「系统」 group for your own directories (`~/.dsh/skills`, `~/.agents/skills`, extra recursive dirs), and one group per **plugin** (titled with the package name, e.g. “插件 · @iuuuuuuuu/agent-notes”). Plugin groups start folded and carry a master switch: turning it off writes `disable-model-invocation` to every skill that plugin provides, turning it back on restores them exactly; shipped/read-only skills are never written and are reported as skipped.
 
-### 1.2 Sidebar entry
+### 1.2 Plugin-provided MCPs, switched live
+
+Some MCP servers are injected by a plugin's own config (box, for example); the library used to neither see nor switch them. They now appear under a “插件 · <package>” group (folded by default, with a group master switch and per-row switches) and the switch takes effect **immediately**: turning one off stops that connection on the spot (the child process is observed to exit), turning it back on reconnects — **no DSH restart**. Those rows do not belong to the library, so a restart returns them to the plugin's default.
+
+### 1.3 Sidebar entry
 
 The capability library is not settings-only: the sidebar gets a “能力库” row (right under Plugins), and one click opens the same card UI as a full page in the main area — no settings dialog needed. Hosts that predate that seat simply do not show the row, and the settings entry keeps working.
 

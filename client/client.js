@@ -515,6 +515,12 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [bufferMb, setBufferMb] = useState(null);
     const [bufferDraft, setBufferDraft] = useState("");
     const [advanced, setAdvanced] = useState(false);
+    // Plugin-contributed MCP rows come from the live loader (not the registry):
+    // `native` is that list, `openGroups` folds their per-plugin groups (folded
+    // by default, like the skill groups), `busyNative` marks the switch in flight.
+    const [native, setNative] = useState({ supported: false, entries: [] });
+    const [openGroups, setOpenGroups] = useState({});
+    const [busyNative, setBusyNative] = useState("");
 
     const refresh = useCallback(async (rv) => {
       setLoading(true);
@@ -522,6 +528,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       try {
         const data = await getJson("/skill-mcp-manager/mcp" + (rv ? "?reveal=1" : ""));
         setEntries(data.entries || []);
+        setNative(data.native || { supported: false, entries: [] });
       } catch (err) {
         setError(errText(err));
       } finally {
@@ -711,6 +718,72 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       return "";
     }
 
+    // Plugin-contributed rows: toggled through the host's loader at runtime, so the
+    // change lands immediately and survives until the next boot (the row's own
+    // bundle patch is untouched).
+    async function toggleNative(item, enabled) {
+      setBusyNative("item:" + item.id);
+      try {
+        const data = await postJson("/skill-mcp-manager/mcp/native", { id: item.id, enabled });
+        if (data.native) setNative(data.native);
+        setNotice("已" + (enabled ? "启用 " : "停用 ") + item.serverName + "（即时生效，无需重启）");
+      } catch (err) {
+        setError(errText(err));
+      } finally {
+        setBusyNative("");
+      }
+    }
+
+    async function toggleNativeGroup(group, enabled) {
+      setBusyNative(group.key);
+      try {
+        for (const item of group.items) {
+          if (item.enabled === enabled) continue;
+          const data = await postJson("/skill-mcp-manager/mcp/native", { id: item.id, enabled });
+          if (data.native) setNative(data.native);
+        }
+        setNotice("已" + (enabled ? "启用 " : "停用 ") + (group.owner || "未归属插件") + " 的 "
+          + group.items.length + " 个 MCP（即时生效，无需重启）");
+      } catch (err) {
+        setError(errText(err));
+      } finally {
+        setBusyNative("");
+      }
+    }
+
+    function nativeCard(item) {
+      return h("article", {
+        key: "native-" + item.id,
+        className: cx("smx-card", !item.enabled && "is-dimmed"),
+      },
+        h("div", { className: "smx-card__head" },
+          h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle") }),
+          h("div", { className: "smx-card__ident" },
+            h("span", { className: "smx-card__name", title: item.id }, item.serverName),
+            h("span", { className: "smx-card__sub" },
+              [item.transport, item.urlHost || item.command].filter(Boolean).join(" \u00b7 ")),
+          ),
+          h(Badge, { tone: "muted" }, "插件"),
+        ),
+        h("p", { className: cx("smx-card__desc", "is-empty") },
+          "由插件注入的 loader 行（" + item.id + "），不在能力库注册表里。"),
+        h("div", { className: "smx-card__status" },
+          h("span", null, item.enabled ? "已启用" : "已停用"),
+          h("span", { className: "smx-card__hint" }, "开关即时生效，无需重启"),
+        ),
+        h("div", { className: "smx-card__foot" },
+          h("label", { className: "smx-switchline" },
+            h(Switch, {
+              checked: item.enabled,
+              disabled: busyNative === "item:" + item.id,
+              onChange: (next) => toggleNative(item, next),
+            }),
+            h("span", { className: "smx-switchline__label" }, item.enabled ? "启用中" : "已停用"),
+          ),
+        ),
+      );
+    }
+
     function envRows(entry) {
       const keys = Object.keys(entry.env || {});
       if (keys.length === 0) return null;
@@ -867,12 +940,59 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const busyCount = outcomes.filter((outcome) => outcome === "busy").length;
     const opened = (entries || []).find((entry) => entry.name === detail);
 
+    const nativeEntries = native.entries || [];
+    const nativeGroups = [];
+    {
+      const byOwner = new Map();
+      for (const item of nativeEntries) {
+        const key = item.owner || "(未归属插件)";
+        let group = byOwner.get(key);
+        if (group === undefined) {
+          group = { key, owner: item.owner, items: [] };
+          byOwner.set(key, group);
+          nativeGroups.push(group);
+        }
+        group.items.push(item);
+      }
+    }
+    const nativeSections = nativeGroups.map((group) => {
+      const unfolded = openGroups[group.key] === true;
+      const enabledCount = group.items.filter((item) => item.enabled).length;
+      return h("section", { key: "native-" + group.key, className: "smx-group smx-group--plugin" },
+        h("div", { className: "smx-group__head" },
+          h("button", {
+            type: "button",
+            className: "smx-group__toggle",
+            "aria-expanded": unfolded ? "true" : "false",
+            onClick: () => setOpenGroups((current) => ({ ...current, [group.key]: !unfolded })),
+          },
+            h("span", { className: cx("smx-group__chevron", unfolded && "is-open") }, "\u25b8"),
+            h("span", { className: "smx-group__title" }, "插件 \u00b7 " + group.key),
+            h("span", { className: "smx-group__count" }, group.items.length + " 个 \u00b7 启用 " + enabledCount),
+          ),
+          h("span", { className: "smx-group__switch" },
+            h(Switch, {
+              checked: enabledCount > 0,
+              disabled: busyNative === group.key,
+              onChange: (next) => toggleNativeGroup(group, next),
+            }),
+            h("span", { className: "smx-switchline__label" },
+              enabledCount === 0
+                ? "全部关闭"
+                : enabledCount === group.items.length ? "全部开启" : "部分开启"),
+          ),
+        ),
+        unfolded ? h("div", { className: "smx-cards" }, group.items.map(nativeCard)) : null,
+      );
+    });
+
     return h("div", { className: "smx" },
       h("div", { className: "smx-head" },
         h("span", { className: "smx-count" }, entries
           ? String(entries.length) + " 个服务器 \u00b7 连通 " + okCount + " \u00b7 失败 " + failCount
             + (busyCount > 0 ? " \u00b7 检测中 " + busyCount : "")
             + " \u00b7 未检测 " + outcomes.filter((outcome) => outcome === "none").length
+            + (nativeEntries.length > 0 ? " \u00b7 插件 MCP " + nativeEntries.length : "")
           : ""),
         h("div", { className: "smx-head__meta" },
           h("button", {
@@ -927,8 +1047,22 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       notice ? h(Notice, { kind: "success", onDismiss: () => setNotice("") }, notice) : null,
       error ? h(Notice, { kind: "error", onDismiss: () => setError("") }, error) : null,
       loading ? h(Empty, null, "加载中\u2026")
-        : entries && entries.length === 0 ? h(Empty, null, "没有已注册的 MCP 服务器")
-        : h("div", { className: "smx-cards" }, cards),
+        : (entries || []).length === 0 && nativeEntries.length === 0
+          ? h(Empty, null, "没有已注册的 MCP 服务器")
+          : h("div", { className: "smx-groups" },
+              h("section", { className: "smx-group smx-group--system" },
+                h("div", { className: "smx-group__head" },
+                  h("div", { className: "smx-group__toggle" },
+                    h("span", { className: "smx-group__title" }, "系统"),
+                    h("span", { className: "smx-group__count" }, (entries || []).length + " 个"),
+                  ),
+                ),
+                (entries || []).length === 0
+                  ? h(Empty, null, "能力库里还没有 MCP 服务器")
+                  : h("div", { className: "smx-cards" }, cards),
+              ),
+              nativeSections,
+            ),
       opened
         ? h("div", { className: "smx-drawer", role: "dialog", "aria-label": opened.name + " 详情" },
             h("div", { className: "smx-drawer__scrim", onClick: () => { setDetail(""); setOutput(""); } }),

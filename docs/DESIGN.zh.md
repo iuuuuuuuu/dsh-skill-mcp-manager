@@ -95,6 +95,7 @@ tmp/               # 插件内部临时文件（AI 不直接引用；无 args_fi
 
 ### 4.2 展示与编辑（已定，简化为系统编辑器）
 
+- **插件注入的 MCP** 在同一页：宿主已认领的 registry 条目排在「系统」组；`loader` 里被某个 bundle 声明的 `dsh-mcp-client` 行归到「插件 · <bundle>」组（默认折叠、组头总开关、卡片单条开关），开关即时生效且不需要重启（`entry.update`）。头部的计数会额外显示「插件 MCP N」。
   - **分组**：按来源分「系统」+ 每个插件一组。`provider` 是唯一判据（`filesystem` / `skill-mcp-manager-recursive` → 系统；其余 → 插件），路径只用来认包名（先查 `node_modules` / `app.asar` 段，再向上找最近的 `package.json`，且要求技能在 `<pkg>/skills/` 下，避免把用户仓库的 package.json 当成归属）。插件组默认折叠；组头总开关调用 `POST /skills/toggle-group`，把该 `provider` 下所有**可写**技能一次写成 `disable-model-invocation: true`，随包只读的跳过并在回执里列出（`skipped`），全组只读时开关置灰。
 - **SKILL 管理抽屉**：列出所有 SKILL 的 **名字 / 描述 / 路径**（组内仍按路径排序）。
 - **点击条目 → 用系统自带编辑器打开对应文件**（Host 侧 shell 打开：Windows `start`、macOS `open`、Linux `xdg-open`；走 `ctx.shell`/受限子进程）。**不做内置 md 阅读器/编辑器**（后期迭代）。
@@ -308,6 +309,16 @@ tmp/               # 插件内部临时文件（AI 不直接引用；无 args_fi
 - **决策：只扫描提示，不做修复**。扫描是插件该干的（判定成本低、结论稳定），修复不是（一次性的数据手术、每个库的形态都不同）。所以插件不附带修复脚本、不提供修复命令、不做自动修复；用户拿到报错后交给 AI 处理。同理，其它出口（如 `/mcp` 命令输出）不重复播报这条告警——提示只在设置页横幅与浮层各出现一次。
 - **测试**：`test/session-audit-smoke.mjs`（候选筛选、三种形状、正文转义提及不误判、已修形态判干净、明文日志、受影响保持重扫、扫到 0 退休、退休后不重写记录、空库立即退休、缺失根目录不报错、`running()` 只在扫描真在跑时为真、客户端契约与"三种提示各用各的标记、横幅不读浮层标记"的字符串守卫）。
 
+### 5.14 插件注入的 MCP 行（分组 + 热开关）
+
+**问题**：bundle 可以在自己的 `cordis.patch.yml` 里 `insert` 一条 `@deepseek-ai/dsh-mcp-client` 行（box 就是这样）。这类行不进 registry —— `reconcile` 只读 profile patch，而 profile patch 里同 id 的 modifier 行盖不住 bundle 的 insert（实测 `--dump-config` 里 `disabled` 不生效）。于是它们既不在能力库里显示，也关不掉。
+
+- **发现**：`ctx.inject(["loader"])` → `loader.entries()`，取 `options.name === "@deepseek-ai/dsh-mcp-client"` 且未被 registry 认领（按 `systemEntryId` 过滤）的行。host 不暴露 loader 时（老宿主）返回 `native.supported=false`，UI 退化成只有「系统」组。
+- **归属**：读 `<profile>/package.json` 的 `dsh.profile.bundles`，逐个 parse `node_modules/<bundle>/cordis.patch.yml`，把声明了该行 id 的 bundle 记为 owner。`resolveProfile()` 指错 profile 时（`--profile` 不一定传）再扫一遍 `profiles/*`，先到先得；都找不到就显示「未归属插件」，不猜。
+- **热开关**：`POST /mcp/native {id, enabled}` → `entry.update({ disabled })`。loader 的 `update` 在 disabled 时 `fiber.dispose()`、恢复时 `init()`：真机实测禁用后 MCP 子进程 PID 真实退出、启用后新 PID 起来，**不需要重启**，也不改动 bundle 的 patch（重启后回到插件默认 —— 这是刻意的：别人的包内容不动）。
+- **不动 registry**：这些行不写 `registry.json`、不进托管块、不参与 `mcp_register`/`mcp_load` 的按需加载；它们就是插件的原生连接，能力库只负责显示与开关。
+- **视图**：`GET /mcp` 增加 `native{supported, entries[{id, serverName, transport, command, urlHost, envKeys, headerKeys, owner, enabled}]}`。url 只回 host（`protocol//host`），避免把 query 里的 token 带到浏览器。
+- **测试**：`test/mcp-native-smoke.mjs` —— 真 profile 目录（两个 bundle 各插一行）验归属、假 loader 验 `update({disabled})` 调用与视图回读、未知 id/缺 `enabled` 一律 400。故障注入：去掉归属映射、去掉 `entry.update` 调用，两条都变红。
 ### 5.13 连接检测（管理页探活）
 
 **问题**：卡片上原本只有一个「工具数」和一个常驻失败标记，都回答不了「这个条目现在还连得上吗」——工具快照可能是几个月前的，`connectFailed` 只反映本进程里 eager 注册那一次。所以判定必须来自一次真连接。
