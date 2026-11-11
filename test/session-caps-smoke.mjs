@@ -197,6 +197,34 @@ check(capsRoute() !== undefined, "missing route /skill-mcp-manager/session-caps"
   check(text.includes("alpha"), "the catalog must advertise the server again");
 }
 
+// 6) one-click: bulk off removes both kinds, bulk on restores them
+{
+  const off = makeRes();
+  await capsRoute().handler(makeReq("POST", "/skill-mcp-manager/session-caps", { session: "sess-1", bulk: true, enabled: false }), off);
+  const body = bodyOf(off);
+  console.log("bulk off ->", off.status, JSON.stringify({ mcp: body.mcp?.map((m) => m.name + ":" + m.enabled), skills: body.skills?.map((x) => x.name + ":" + x.enabled) }));
+  check(off.status === 200, "bulk off must answer 200");
+  check((body.mcp ?? []).every((m) => m.enabled === false), "bulk off must disable every MCP server");
+  check((body.skills ?? []).every((x) => x.enabled === false), "bulk off must disable every skill");
+  const saved = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
+  check((saved["sess-1"]?.mcp ?? []).includes("alpha"), "bulk off must persist the MCP denials");
+  check((saved["sess-1"]?.skills ?? []).length === 2, "bulk off must persist every skill denial, got " + JSON.stringify(saved["sess-1"]?.skills));
+  const guard = agent.guards[0];
+  const denied = await guard({ name: "skill", arguments: { name: "skill-two" } }, async () => "allow");
+  check(denied === "deny", "after bulk off the guard must deny any skill");
+
+  const on = makeRes();
+  await capsRoute().handler(makeReq("POST", "/skill-mcp-manager/session-caps", { session: "sess-1", bulk: true, enabled: true }), on);
+  const restored = bodyOf(on);
+  console.log("bulk on ->", on.status, JSON.stringify({ mcp: restored.mcp?.map((m) => m.name + ":" + m.enabled), skills: restored.skills?.map((x) => x.name + ":" + x.enabled) }));
+  check((restored.mcp ?? []).every((m) => m.enabled === true), "bulk on must enable every MCP server");
+  check((restored.skills ?? []).every((x) => x.enabled === true), "bulk on must enable every skill");
+  const savedAfter = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
+  check(savedAfter["sess-1"] === undefined, "bulk on must clear the session from the policy file");
+  const allowed = await guard({ name: "skill", arguments: { name: "skill-two" } }, async () => "allow");
+  check(allowed === "allow", "after bulk on the guard must allow the skill again");
+}
+
 for (const disposer of effects) { try { await disposer(); } catch { /* best effort */ } }
 await rm(tmp, { recursive: true, force: true });
 

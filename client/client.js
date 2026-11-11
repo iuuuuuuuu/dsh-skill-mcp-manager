@@ -1283,6 +1283,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const sessionId = typeof props.sessionId === "string" ? props.sessionId : "";
     const [state, setState] = useState(null);
     const [error, setError] = useState("");
+    const [notice, setNotice] = useState("");
     const [busy, setBusy] = useState("");
 
     const load = useCallback(async () => {
@@ -1312,37 +1313,80 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
 
-    function row(kind, item, meta) {
+    // 全部开启 / 全部关闭: one host call, one policy write per name; live MCP
+    // connections are dropped server-side on the way, so the running conversation
+    // sees it immediately.
+    async function flipAll(enabled) {
+      setBusy("bulk");
+      try {
+        let data;
+        try {
+          data = await postJson("/skill-mcp-manager/session-caps", { session: sessionId, bulk: true, enabled });
+        } catch (bulkError) {
+          // A host without the bulk branch still gets the same result one name at a
+          // time; the switch must not be dead just because the host is older.
+          const current = state || { mcp: [], skills: [] };
+          for (const item of current.mcp || []) {
+            data = await postJson("/skill-mcp-manager/session-caps", { session: sessionId, kind: "mcp", name: item.name, enabled });
+          }
+          for (const item of current.skills || []) {
+            data = await postJson("/skill-mcp-manager/session-caps", { session: sessionId, kind: "skills", name: item.name, enabled });
+          }
+          if (data === undefined) throw bulkError;
+        }
+        setState(data);
+        setError("");
+        setNotice(enabled ? "已在本对话启用全部能力" : "已在本对话移除全部能力（MCP 连接已断开）");
+      } catch (err) {
+        setError(errText(err));
+      } finally {
+        setBusy("");
+      }
+    }
+
+    function tile(kind, item, meta, badge) {
       const key = kind + ":" + item.name;
-      return h("li", { key, className: cx("smx-tool", !item.enabled && "is-disabled") },
-        h("span", { className: "smx-tool__name" }, item.name),
-        h("span", { className: "smx-tool__desc" }, meta),
-        h("span", { className: "smx-view__switch" },
-          h(Switch, {
-            checked: item.enabled,
-            disabled: busy === key,
-            onChange: (next) => flip(kind, item.name, next),
-          }),
-          h("span", { className: "smx-switchline__label" }, item.enabled ? "可用" : "本对话已移除"),
+      const running = busy === key || busy === "bulk";
+      return h("article", {
+        key,
+        className: cx("smx-cap", !item.enabled && "is-off"),
+      },
+        h("div", { className: "smx-cap__head" },
+          h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle"), title: item.enabled ? "可用" : "本对话已移除" }),
+          h("span", { className: "smx-cap__name", title: item.name }, item.name),
+          badge ? h(Badge, { tone: "muted" }, badge) : null,
+        ),
+        h("div", { className: "smx-cap__meta" }, meta),
+        h("div", { className: "smx-cap__foot" },
+          h("label", { className: "smx-switchline" },
+            h(Switch, { checked: item.enabled, disabled: running, onChange: (next) => flip(kind, item.name, next) }),
+            h("span", { className: "smx-switchline__label" }, item.enabled ? "可用" : "已移除"),
+          ),
+          h("span", { className: "smx-cap__hint" }, item.enabled ? "本对话可用" : "本对话不可用"),
         ),
       );
     }
 
     const mcp = (state && state.mcp) || [];
     const skills = (state && state.skills) || [];
+    const onCount = mcp.filter((item) => item.enabled).length + skills.filter((item) => item.enabled).length;
+    const totalCount = mcp.length + skills.length;
 
     return h("div", { className: "smx-view" },
       h("div", { className: "smx-head" },
         h("div", null,
           h("h2", { className: "smx-title" }, "能力管理"),
           h("div", { className: "smx-subtitle" },
-            "只影响这个对话：关掉的 MCP 与技能会从本对话的工具面和技能目录里移除，全局配置不变"),
+            "开关即时生效，且只影响这个对话：关掉的 MCP 会立刻断开、从本对话的工具面与目录里消失；技能调用会被本对话拒绝。全局配置不变。"),
         ),
         h("div", { className: "smx-head__meta" },
-          h("span", { className: "smx-count" }, state === null ? "" : (state.live ? "会话运行中" : "会话未启动")),
-          h("button", { type: "button", className: "smx-btn", onClick: load }, "刷新"),
+          h("span", { className: "smx-count" }, state === null ? "" : onCount + " / " + totalCount + " 可用"),
+          h("button", { type: "button", className: "smx-btn", disabled: busy === "bulk" || totalCount === 0, onClick: () => flipAll(false) }, "全部关闭"),
+          h("button", { type: "button", className: "smx-btn smx-btn--primary", disabled: busy === "bulk" || totalCount === 0, onClick: () => flipAll(true) }, "全部开启"),
+          h("button", { type: "button", className: "smx-btn", disabled: busy === "bulk", onClick: load }, "刷新"),
         ),
       ),
+      notice ? h(Notice, { kind: "success", onDismiss: () => setNotice("") }, notice) : null,
       error ? h(Notice, { kind: "error", onDismiss: () => setError("") }, error) : null,
       state === null
         ? h(Empty, null, sessionId === "" ? "这个视图需要一个会话" : "加载中\u2026")
@@ -1352,12 +1396,15 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                 h("div", { className: "smx-group__toggle" },
                   h("span", { className: "smx-group__title" }, "MCP 服务器"),
                   h("span", { className: "smx-group__count" }, mcp.length + " 个"),
+                  state.live ? null : h("span", { className: "smx-group__sub" }, "会话未启动，开关在下一轮生效"),
                 ),
               ),
               mcp.length === 0
                 ? h(Empty, null, "能力库里没有可用的 MCP 服务器")
-                : h("ul", { className: "smx-tools smx-view__list" },
-                    mcp.map((item) => row("mcp", item, [item.transport, item.tier, item.toolCount + " 个工具"].filter(Boolean).join(" \u00b7 "))),
+                : h("div", { className: "smx-cap-grid" },
+                    mcp.map((item) => tile("mcp", item,
+                      [item.transport, item.tier, item.toolCount + " 个工具"].filter(Boolean).join(" \u00b7 "),
+                      item.tier === "eager" ? "常驻" : null)),
                   ),
             ),
             h("section", { className: "smx-group smx-group--system" },
@@ -1369,8 +1416,10 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               ),
               skills.length === 0
                 ? h(Empty, null, "当前作用域没有技能")
-                : h("ul", { className: "smx-tools smx-view__list" },
-                    skills.map((item) => row("skills", item, [item.provider, item.readonly ? "只读" : ""].filter(Boolean).join(" \u00b7 "))),
+                : h("div", { className: "smx-cap-grid" },
+                    skills.map((item) => tile("skills", item,
+                      item.provider ? "来源 " + item.provider : "来源未知",
+                      item.readonly ? "只读" : null)),
                   ),
             ),
           ),
@@ -1415,9 +1464,18 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // The conversation view: the host gives it the panel body, so it owns padding
     // and scrolling like the page shell does.
     ".smx-view { display:flex; flex-direction:column; gap:12px; box-sizing:border-box; height:100%; min-height:0; overflow:auto; padding:16px max(max(16px,min(4vw,48px)),50% - 480px) 24px; }",
-    ".smx-view__list { gap:6px; }",
-    ".smx-view__list .smx-tool { align-items:center; justify-content:space-between; gap:12px; padding:6px 8px; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; }",
-    ".smx-view__switch { display:flex; align-items:center; gap:6px; flex:none; }",
+    // Capability tiles in the conversation view: same card language as 能力库,
+    // compact enough that both sections fit on one screen.
+    ".smx-cap-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; }",
+    ".smx-cap { display:flex; flex-direction:column; gap:6px; min-width:0; padding:10px 12px; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); transition:border-color .12s ease, box-shadow .12s ease; }",
+    ".smx-cap:hover { border-color:var(--dsw-alias-border-l2); box-shadow:0 2px 12px rgba(0,0,0,.07); }",
+    ".smx-cap.is-off { background:var(--dsw-alias-bg-layer-2); border-style:dashed; }",
+    ".smx-cap__head { display:flex; align-items:center; gap:8px; min-width:0; }",
+    ".smx-cap .smx-dot { margin-top:0; }",
+    ".smx-cap__name { flex:1; min-width:0; font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-cap__meta { font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-cap__foot { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:auto; padding-top:6px; border-top:1px solid var(--dsw-alias-border-l1); }",
+    ".smx-cap__hint { font-size:11px; color:var(--dsw-alias-label-secondary); }",
     ".smx-page__body { display:flex; flex-direction:column; flex:1; min-height:0; overflow:auto; padding-bottom:28px; padding-left:max(max(16px,min(4vw,48px)),50% - 480px); padding-right:max(max(16px,min(4vw,48px)),50% - 480px); }",
     ".smx-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }",
     ".smx-title { margin:0; font-size:15px; font-weight:600; color:var(--dsw-alias-label-primary); }",
