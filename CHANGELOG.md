@@ -11,6 +11,8 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 - **修：「能力管理」里技能只列出一个（agent-notes）**：那栏原来用**会话层**（`skills.list({scope: agent})`）取列表，只看得到插件自己注册的那一个；能力库列出的是**常驻 preset 层**（`filesystem` / `~/.agents/skills` / 随包技能）。现在两边取并集（常驻层 + 会话层，按名字去重），视图、单条开关、一键全关/全开都用同一份列表——所以关掉一个只存在于常驻层的技能也不会再报「skill not found」。
 - **修：技能服务偶发不可用（插件上下文失效）**：桌面端重载插件条目后 `ctx.skills` 会抛 `cannot get required service "skills" in inactive context`，而路由还在服务。`skillsService()` 现在按 `ctx.skills` → `ctx.get("skills")` → `ctx.root.skills` 依次取第一个可用的；全部不可用才报「重启 DSH」。(注：这条要重启宿主才生效。)
 - **测试**：`test/session-caps-smoke.mjs` 的假 provider 现在按层返回不同集合（`only-standing` 只在常驻层、`only-agent` 只在会话层），断言并集且不重复；两处故障注入都会红（只取会话层 = 用户遇到的现象；只取常驻层）。
+- **修：技能页白屏（`groups.map is not a function`）** —— 这次是**我的**回归，不是内核问题。给技能页加自定义分组时，把 `originSections = groups.map(...)` 里的 `groups` 留成了自定义分组的**状态对象**（`{groups, members}`），而原来的「系统/插件」分桶数组已改名 `originGroups`。渲染技能 tab 时 `groups.map` 直接抛 TypeError，整块 slot 崩掉 → 页面空白。已改成 `originGroups.map`。
+- **新增 `test/client-render-smoke.mjs`（渲染冒烟，堵住这类）。** 之前所有客户端测试都停在「bundle 能解析 + 槽位注册对」，面板本身从没被**构建**过，所以这类渲染期错误一路绿灯发出去。新测试用最小 React 替身（真 state + 首轮跑 effect）把 `main` 面板的两个 tab 和 `conversation.view` **真的渲染成树**并断言关键节点。故障注入验证：把 `originGroups.map` 改回 `groups.map` → `FAIL: SkillsPanel threw on render: groups.map is not a function`；去掉每类批量开关 → `FAIL: both kinds need their own bulk switch`。
 - **能力管理：默认全关 + MCP / 技能分开的批量开关 + 按插件分组**（本轮按 Owner 要求改）：
   - **新对话默认全部关闭**：策略文件从「记拒绝项」翻转成「记允许项」（`session-caps.json` 存 allow list，没有条目的会话就是全关）。新对话不再挂载任何常驻 MCP、目录注入为空、`mcp_load`/`mcp_call` 全拒、技能目录不列任何技能、`skill` 调用全拒。要用的东西在「能力管理」里开。
   - **批量开关按类型分开**：MCP 段与技能段各有自己的「全部开启 / 全部关闭」，一次只改一类（`POST /session-caps {kind, bulk:true, enabled}`）。再往下每**组**还有自己的「全开 / 全关」。

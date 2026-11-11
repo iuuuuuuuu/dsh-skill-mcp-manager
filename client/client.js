@@ -594,7 +594,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     });
 
     const loose = (group) => group.skills.filter((skill) => assignedTo[skill.name] === undefined);
-    const originSections = groups.map((group) => {
+    const originSections = originGroups.map((group) => {
       const unfolded = openGroups[group.key] !== undefined ? openGroups[group.key] : group.kind === "system";
       const writable = loose(group).filter((skill) => !skill.readonly);
       const enabled = loose(group).filter((skill) => skill.modelInvocable).length;
