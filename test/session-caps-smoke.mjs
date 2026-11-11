@@ -26,6 +26,8 @@ await writeFile(join(dataDir, "registry.json"), `${JSON.stringify({
 }, null, 2)}\n`, "utf8");
 
 const skills = {
+  "only-agent": { name: "only-agent", description: "Only visible in the conversation scope", path: join(tmp, "agent", "SKILL.md"), provider: "agent-notes", invocation: { modelInvocable: true, userInvocable: true }, content: "# agent" },
+  "only-standing": { name: "only-standing", description: "Only visible in the standing scope", path: join(tmp, "standing", "SKILL.md"), provider: "filesystem", invocation: { modelInvocable: true, userInvocable: true }, content: "# standing" },
   "skill-one": { name: "skill-one", description: "First fixture", path: join(tmp, "one", "SKILL.md"), provider: "filesystem", invocation: { modelInvocable: true, userInvocable: true }, content: "# one" },
   "skill-two": { name: "skill-two", description: "Second fixture", path: join(tmp, "two", "SKILL.md"), provider: "filesystem", invocation: { modelInvocable: true, userInvocable: true }, content: "# two" },
 };
@@ -60,11 +62,27 @@ function makeAgent(sessionId) {
 const routes = [];
 const effects = [];
 const toolByName = new Map();
+let deadSkills = false;
 const ctx = {
   tools: { register(definition) { toolByName.set(definition.name, definition); return () => {}; } },
-  skills: {
+  get skills() {
+    if (deadSkills) throw new Error('cannot get required service "skills" in inactive context');
+    return liveSkillsService;
+  },
+  get(name) {
+    if (name === "webServer") return { register(route) { routes.push(route); return () => {}; } };
+    if (name === "skills") return liveSkillsService;
+    return undefined;
+  },
+  _skills: {
     registerProvider() { return () => {}; },
-    async list() { return Object.values(skills).map((s) => ({ name: s.name, description: s.description, invocation: s.invocation, provider: s.provider })); },
+    // Standing scope (no `scope`) is what 能力库 lists; an agent scope only sees
+    // its own layer. The view must show the union, not just one of them.
+    async list(options) {
+      const all = Object.values(skills).map((s) => ({ name: s.name, description: s.description, invocation: s.invocation, provider: s.provider }));
+      if (options?.scope !== undefined) return all.filter((s) => s.name !== "only-standing");
+      return all.filter((s) => s.name !== "only-agent");
+    },
     async get(name) { return skills[name]; },
   },
   on(event, handler) {
@@ -72,12 +90,9 @@ const ctx = {
     return () => {};
   },
   effect(fn) { const d = fn(); if (typeof d === "function") effects.push(d); return () => {}; },
-  get(name) {
-    if (name === "webServer") return { register(route) { routes.push(route); return () => {}; } };
-    return undefined;
-  },
   logger: { warn() {}, error() {}, info() {} },
 };
+const liveSkillsService = ctx._skills;
 const preSteps = [];
 const failed = [];
 const check = (condition, message) => { if (!condition) failed.push(message); };
@@ -125,7 +140,9 @@ check(capsRoute() !== undefined, "missing route /skill-mcp-manager/session-caps"
   check(res.status === 200, "GET session-caps must answer 200");
   check(!(body.mcp ?? []).some((m) => m.name === "beta"), "a globally disabled entry must not appear in the conversation view");
   check((body.mcp ?? []).every((m) => m.enabled), "everything starts allowed");
-  check((body.skills ?? []).length === 2, "both fixture skills must be listed");
+  check((body.skills ?? []).length === 3, "before the conversation runs, the view lists the standing scope, got " + JSON.stringify((body.skills ?? []).map((x) => x.name)));
+  check((body.skills ?? []).some((x) => x.name === "only-standing"), "a skill only visible in the standing scope must still be listed");
+  check(new Set((body.skills ?? []).map((x) => x.name)).size === (body.skills ?? []).length, "the union must not duplicate a name");
 }
 
 // 2) deny one MCP server: catalog drops it, mcp_load refuses it, policy persisted
@@ -158,6 +175,19 @@ check(capsRoute() !== undefined, "missing route /skill-mcp-manager/session-caps"
     console.log("mcp_load denied ->", error);
     check(/disabled in this conversation/.test(error), "mcp_load must refuse a denied server, got: " + error);
   }
+}
+
+// 3b) a dead ctx.skills getter must fall back to the live service
+{
+  deadSkills = true;
+  const res = makeRes();
+  await capsRoute().handler(makeReq("GET", "/skill-mcp-manager/session-caps?session=sess-1"), res);
+  const body = bodyOf(res);
+  console.log("dead ctx.skills ->", res.status, "skills:", (body.skills ?? []).length);
+  check(res.status === 200, "an inactive ctx.skills must not break the view");
+  check((body.skills ?? []).some((x) => x.name === "only-agent"), "a skill only visible in the conversation scope must be listed once it is live");
+  check((body.skills ?? []).length === 4, "the fallback lookup must list the union once the conversation is live, got " + (body.skills ?? []).length);
+  deadSkills = false;
 }
 
 // 4) deny one skill: the scoped guard refuses it, the shadow hides it
@@ -208,7 +238,7 @@ check(capsRoute() !== undefined, "missing route /skill-mcp-manager/session-caps"
   check((body.skills ?? []).every((x) => x.enabled === false), "bulk off must disable every skill");
   const saved = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
   check((saved["sess-1"]?.mcp ?? []).includes("alpha"), "bulk off must persist the MCP denials");
-  check((saved["sess-1"]?.skills ?? []).length === 2, "bulk off must persist every skill denial, got " + JSON.stringify(saved["sess-1"]?.skills));
+  check((saved["sess-1"]?.skills ?? []).length === 4, "bulk off must persist every skill denial (4 fixtures), got " + JSON.stringify(saved["sess-1"]?.skills));
   const guard = agent.guards[0];
   const denied = await guard({ name: "skill", arguments: { name: "skill-two" } }, async () => "allow");
   check(denied === "deny", "after bulk off the guard must deny any skill");
