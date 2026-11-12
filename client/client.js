@@ -1538,7 +1538,8 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [openGroups, setOpenGroups] = useState({});
     // Plugin groups are long and mostly off: they render as one-line rows, and the
     // overflow opens in a modal instead of pushing the page taller.
-    const [more, setMore] = useState(null);
+    // A plugin group is a fixed-height box: one row visible, the rest inside it.
+    const [openBox, setOpenBox] = useState({});
     // What a NEW conversation in this workspace starts with (saved from here).
     const [preset, setPreset] = useState(null);
 
@@ -1630,16 +1631,16 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
 
-    // One line per plugin-provided capability: dot, name, meta, switch. Everything a
-    // card would say that matters here fits on the line; the rest lives in 能力库.
-    function row(kind, item, meta, badge) {
+    // One line per plugin-provided item, shown INSIDE the group's fixed-height box:
+    // the box is the card, the rows are what you scroll through in it.
+    function plugRow(kind, item, meta, badge) {
       const busyKey = kind + ":" + item.name;
-      return h("div", { key: busyKey, className: cx("smx-caprow", !item.enabled && "is-off") },
+      return h("div", { key: busyKey, className: cx("smx-plugrow", !item.enabled && "is-off") },
         h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle") }),
-        h("span", { className: "smx-caprow__name", title: item.name }, item.name),
+        h("span", { className: "smx-plugrow__name", title: item.name }, item.name),
         badge ? h(Badge, { tone: "muted" }, badge) : null,
-        h("span", { className: "smx-caprow__meta", title: meta }, meta),
-        h("span", { className: "smx-caprow__switch" },
+        h("span", { className: "smx-plugrow__meta", title: meta }, meta),
+        h("span", { className: "smx-plugrow__switch" },
           h(Switch, {
             checked: item.enabled,
             disabled: busy === busyKey || busy === "many:" + kind,
@@ -1748,19 +1749,26 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                       disabled: disabled,
                       onClick: () => flipMany(kind, bucket.items.map((item) => item.name), false, bucket.title),
                     }, "全关"),
+                    bucket.key.startsWith("plugin:") && bucket.items.length > 1
+                      ? h("button", {
+                          type: "button",
+                          className: "smx-btn smx-btn--ghost",
+                          onClick: () => setOpenBox((current) => ({ ...current, [bucket.key]: !openBox[bucket.key] })),
+                        }, openBox[bucket.key] ? "收起" : "展开 " + bucket.items.length + " 个")
+                      : null,
                   ),
                 ),
                 unfolded
-                  ? h("div", { className: bucket.key.startsWith("plugin:") ? "smx-caprows" : "smx-cap-grid" },
-                      shown.map((item) => (bucket.key.startsWith("plugin:")
-                        ? row(kind, item, metaOf(item), badgeOf(item))
-                        : tile(kind, item, metaOf(item), badgeOf(item)))),
-                      hidden.length === 0 ? null : h("button", {
-                        type: "button",
-                        className: "smx-btn smx-btn--ghost smx-caprows__more",
-                        onClick: () => setMore({ kind, title: bucket.title, items: ordered, metaOf, badgeOf }),
-                      }, "展开更多 " + bucket.items.length + " 个"),
-                    )
+                  ? (bucket.key.startsWith("plugin:")
+                      // A plugin group is a fixed-height box: one row visible, 展开 grows
+                      // that same box and the rest scrolls inside it, so the page never
+                      // changes height as plugins come and go.
+                      // Exactly one row while collapsed: the row height depends on the
+                      // theme's font metrics, so hiding by height leaked a second row.
+                      ? h("div", { className: cx("smx-pluginbox", openBox[bucket.key] && "is-open") },
+                          (openBox[bucket.key] ? ordered : ordered.slice(0, 1)).map((item) => plugRow(kind, item, metaOf(item), badgeOf(item))),
+                        )
+                      : h("div", { className: "smx-cap-grid" }, shown.map((item) => tile(kind, item, metaOf(item), badgeOf(item)))))
                   : null,
               );
             })),
@@ -1831,18 +1839,6 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               (item) => (item.provider ? "来源 " + item.provider : "来源未知"),
               (item) => (item.readonly ? "只读" : null)),
           ),
-      // Overflow of a plugin group: a centered modal, so the page keeps one screen.
-      more === null ? null : h("div", { className: "smx-modal", role: "dialog", "aria-label": more.title }, 
-        h("div", { className: "smx-modal__scrim", onClick: () => setMore(null) }),
-        h("div", { className: "smx-modal__panel" },
-          h("div", { className: "smx-modal__head" },
-            h("span", { className: "smx-modal__title" }, more.title),
-            h("span", { className: "smx-count" }, more.items.filter((item) => item.enabled).length + " / " + more.items.length + " 开启"),
-            h("button", { type: "button", className: "smx-btn", onClick: () => setMore(null) }, "关闭"),
-          ),
-          h("div", { className: "smx-caprows" }, more.items.map((item) => row(more.kind, item, more.metaOf(item), more.badgeOf(item)))),
-        ),
-      ),
     );
   }
 
@@ -1904,21 +1900,16 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-capgroup__title { font-size:12px; font-weight:600; color:var(--dsw-alias-label-secondary); }",
     ".smx-capgroup__count { font-size:11px; color:var(--dsw-alias-label-secondary); }",
     ".smx-capgroup__actions { display:flex; align-items:center; gap:4px; }",
-    // One-line rows for plugin-provided capabilities, plus the overflow modal.
-    ".smx-caprows { display:flex; flex-direction:column; gap:2px; padding:4px; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); }",
-    ".smx-modal .smx-caprows { border:0; padding:0; background:none; }",
-    ".smx-caprow { display:flex; align-items:center; gap:8px; min-width:0; padding:5px 8px; border-radius:8px; }",
-    ".smx-caprow:hover { background:var(--dsw-alias-bg-layer-2); }",
-    ".smx-caprow.is-off .smx-caprow__name { color:var(--dsw-alias-label-secondary); }",
-    ".smx-caprow__name { flex:none; max-width:40%; font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
-    ".smx-caprow__meta { flex:1; min-width:0; font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
-    ".smx-caprow__switch { flex:none; display:flex; align-items:center; }",
-    ".smx-caprows__more { align-self:flex-start; margin-top:4px; }",
-    ".smx-modal { position:fixed; inset:0; z-index:120; display:flex; align-items:center; justify-content:center; }",
-    ".smx-modal__scrim { position:absolute; inset:0; background:rgba(0,0,0,.35); }",
-    ".smx-modal__panel { position:relative; display:flex; flex-direction:column; gap:10px; width:min(640px, calc(100vw - 48px)); max-height:min(70vh, 620px); overflow:auto; padding:14px 16px; border:1px solid var(--dsw-alias-border-l2); border-radius:14px; background:var(--dsw-alias-bg-layer-1); box-shadow:0 18px 48px rgba(0,0,0,.28); }",
-    ".smx-modal__head { display:flex; align-items:center; gap:10px; }",
-    ".smx-modal__title { flex:1; font-size:13px; font-weight:600; }",
+    // A plugin group is a fixed-height card box: one row visible when collapsed,
+    // 展开 grows the box and the rest scrolls inside it.
+    ".smx-pluginbox { display:flex; flex-direction:column; gap:2px; padding:4px; height:42px; overflow:hidden; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); }",
+    ".smx-pluginbox.is-open { height:min(46vh, 340px); overflow:auto; }",
+    ".smx-plugrow { display:flex; align-items:center; gap:8px; min-width:0; padding:4px 6px; border-radius:8px; flex:none; }",
+    ".smx-plugrow:hover { background:var(--dsw-alias-bg-layer-2); }",
+    ".smx-plugrow.is-off .smx-plugrow__name { color:var(--dsw-alias-label-secondary); }",
+    ".smx-plugrow__name { flex:none; max-width:38%; font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-plugrow__meta { flex:1; min-width:0; font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-plugrow__switch { flex:none; display:flex; align-items:center; }",
     // The group header is a fold toggle (the chevron is the library page's).
     ".smx-capgroup__toggle { display:flex; align-items:center; gap:5px; padding:0; border:0; background:none; cursor:pointer; color:inherit; font:inherit; }",
     ".smx-page__body { display:flex; flex-direction:column; flex:1; min-height:0; overflow:auto; padding-bottom:28px; padding-left:max(max(16px,min(4vw,48px)),50% - 480px); padding-right:max(max(16px,min(4vw,48px)),50% - 480px); }",

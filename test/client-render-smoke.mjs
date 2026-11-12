@@ -275,16 +275,51 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
     }
   })(tree);
   const flat = texts.join(" | ");
-  console.log("plugin rows:", texts.filter((t) => /^(box-|sequential)/.test(t)).join(","));
-  check(flat.includes("展开更多"), "an overflowing plugin group must offer 展开更多, got: " + flat.slice(0, 200));
-  const boxA = texts.indexOf("box-a");
-  const boxC = texts.indexOf("box-c");
-  const boxB = texts.indexOf("box-b");
-  check(boxA !== -1 && boxB !== -1 && boxA < boxB, "switched-on rows must come first (box-a before box-b)");
-  check(boxC !== -1 && boxC < boxB, "every switched-on row must precede the off ones");
-  check(!texts.includes("sequential"), "a row beyond the limit must not be on the page (it lives in the modal)");
+  console.log("plugin rows (collapsed):", texts.filter((t) => /^(box-|sequential)/.test(t)).join(","));
+  check(flat.includes("展开 "), "a plugin group with more than one row must offer 展开, got: " + flat.slice(0, 200));
+  check(!flat.includes("smx-modal"), "there is no modal any more — the box grows in place");
+  const boxClass = [];
+  (function walk(node) {
+    if (node === null || node === undefined || typeof node !== "object") return;
+    const cls = node.props?.className;
+    if (typeof cls === "string" && cls.includes("smx-pluginbox")) boxClass.push(cls);
+    for (const child of node.children ?? []) walk(child);
+  })(tree);
+  check(boxClass.length === 1, "the plugin group must render exactly one box, got " + boxClass.length);
+  check(!boxClass[0].includes("is-open"), "the box must start collapsed (one row visible)");
+  check(texts.filter((t) => /^(box-|sequential)/.test(t)).length === 1, "collapsed shows one row");
+  check(texts.includes("box-a"), "the first row is the first switched-on one");
   const rowsOnPage = texts.filter((t) => /^(box-|sequential)/.test(t)).length;
-  check(rowsOnPage === 5, "only the row limit stays on the page, got " + rowsOnPage);
+  check(rowsOnPage === 1, "a collapsed box shows exactly one row, got " + rowsOnPage);
+  check(flat.includes("展开 6 个"), "the header must say how many rows the box holds");
+  for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
+}
+
+// 4) 展开 grows the same box and shows every row
+{
+  for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
+  stateOverrides["CapabilityView:4"] = { "plugin:@acme/box": true };
+  stateOverrides["CapabilityView:5"] = { "plugin:@acme/box": true };
+  instances.clear();
+  hookSlots = [];
+  const props = view.options.inject ? view.options.inject("sess-1") : {};
+  renderComponent("CapabilityView(loading)", view.component, props);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const tree = renderComponent("CapabilityView(expanded)", view.component, props, true);
+  const texts = [];
+  (function walk(node) {
+    if (node === null || node === undefined || typeof node !== "object") return;
+    for (const child of node.children ?? []) {
+      if (typeof child === "string") texts.push(child);
+      else walk(child);
+    }
+  })(tree);
+  const names = texts.filter((t) => /^(box-|sequential)/.test(t));
+  console.log("plugin rows (expanded):", names.join(","));
+  check(names.length === 6, "展开 must show every row, got " + names.length);
+  check(names.indexOf("box-a") < names.indexOf("box-c") && names.indexOf("box-c") < names.indexOf("box-b"),
+    "switched-on rows come first, then the off ones: " + names.join(","));
+  check(texts.includes("收起"), "the header must offer 收起 once expanded");
   for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
 }
 
