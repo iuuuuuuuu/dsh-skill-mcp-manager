@@ -60,6 +60,7 @@ const fakeLoader = {
 };
 
 let deadSkills = false;
+let currentWorkspace = join(tmp, "workspace-a");
 const routes = [];
 const effects = [];
 const preSteps = [];
@@ -87,6 +88,7 @@ const ctx = {
   get(name) {
     if (name === "webServer") return webServer;
     if (name === "skills") return liveSkillsService;
+    if (name === "workingDirectory") return { ensure: async (agent) => agent?.session?.cwd ?? currentWorkspace };
     return undefined;
   },
   logger: { warn(message) { warnings.push(String(message)); }, error() {}, info() {} },
@@ -275,7 +277,9 @@ const agent = makeAgent("sess-1");
   const cleared = await caps("POST", { session: "sess-1", kind: "skills", bulk: true, enabled: false });
   check((cleared.body.skills ?? []).every((s) => s.enabled === false), "bulk skills off must disable every skill");
   const empty = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
-  check(empty["sess-1"] === undefined, "a session with nothing enabled must be dropped from the file, got " + JSON.stringify(empty));
+  const entry = empty["sess-1"];
+  check(entry === undefined || ((entry.mcp ?? []).length === 0 && (entry.skills ?? []).length === 0),
+    "a session with nothing enabled must leave no names behind, got " + JSON.stringify(entry));
 }
 
 // 5b) the host's normal agent shape (no `skills` inject) must not break a switch
@@ -314,6 +318,59 @@ const agent = makeAgent("sess-1");
   check(res.status === 200, "an inactive ctx.skills must not break the view");
   check((res.body.skills ?? []).length === 3, "the fallback lookup must still list the skills, got " + (res.body.skills ?? []).length);
   deadSkills = false;
+}
+
+// 7b) a workspace default seeds a NEW conversation once, and only in that workspace
+{
+  const save = await caps("POST", { session: "sess-1", kind: "mcp", name: "alpha", enabled: true });
+  check(save.status === 200, "priming sess-1 must work");
+  const saved = makeRes();
+  await routeByPath("/skill-mcp-manager/workspace-defaults").handler(
+    makeReq("POST", "/skill-mcp-manager/workspace-defaults", { workspace: currentWorkspace, action: "save-current", session: "sess-1" }),
+    saved,
+  );
+  const presetBody = bodyOf(saved);
+  console.log("preset saved ->", saved.status, JSON.stringify(presetBody).slice(0, 200));
+  check(saved.status === 200, "saving the workspace default must answer 200");
+  check((presetBody.mcp ?? []).includes("alpha"), "the enabled MCP server must be in the default");
+  const onDisk = JSON.parse(await readFile(join(dataDir, "workspace-defaults.json"), "utf8"));
+  check(Object.keys(onDisk).length === 1, "the default must be persisted, got " + JSON.stringify(Object.keys(onDisk)));
+
+  // a brand-new conversation in the same workspace starts from it
+  const fresh = makeAgent("sess-fresh");
+  fresh.session.cwd = currentWorkspace;
+  await preStep(fresh);
+  const freshCaps = await caps("GET", { session: "sess-fresh" });
+  console.log("seeded ->", JSON.stringify(freshCaps.body.mcp?.map((m) => m.name + ":" + m.enabled)));
+  check(freshCaps.body.mcp?.find((m) => m.name === "alpha")?.enabled === true, "a new conversation must inherit the workspace default");
+
+  // a conversation in another workspace does not
+  const elsewhere = makeAgent("sess-elsewhere");
+  elsewhere.session.cwd = join(tmp, "workspace-b");
+  await preStep(elsewhere);
+  const elsewhereCaps = await caps("GET", { session: "sess-elsewhere" });
+  check((elsewhereCaps.body.mcp ?? []).every((m) => m.enabled === false), "another workspace must stay closed");
+
+  // an existing conversation keeps its own choice
+  await caps("POST", { session: "sess-1", kind: "mcp", name: "alpha", enabled: false });
+  await preStep(agent);
+  const kept = await caps("GET", { session: "sess-1" });
+  check(kept.body.mcp?.find((m) => m.name === "alpha")?.enabled === false, "an existing conversation must not be re-seeded");
+
+  // clearing removes the default
+  const cleared = makeRes();
+  await routeByPath("/skill-mcp-manager/workspace-defaults").handler(
+    makeReq("POST", "/skill-mcp-manager/workspace-defaults", { workspace: currentWorkspace, action: "clear" }),
+    cleared,
+  );
+  const after = JSON.parse(await readFile(join(dataDir, "workspace-defaults.json"), "utf8"));
+  check(Object.keys(after).length === 0, "clearing must drop the entry, got " + JSON.stringify(Object.keys(after)));
+  const bad = makeRes();
+  await routeByPath("/skill-mcp-manager/workspace-defaults").handler(
+    makeReq("POST", "/skill-mcp-manager/workspace-defaults", { workspace: currentWorkspace, action: "nope" }),
+    bad,
+  );
+  check(bad.status === 400, "an unknown action must be refused");
 }
 
 // 8) bad input is refused

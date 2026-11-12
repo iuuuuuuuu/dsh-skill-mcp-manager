@@ -69,6 +69,7 @@ globalThis.fetch = async (url) => {
       ],
     });
   }
+  if (path.includes("/workspace-defaults")) return json({ ok: true, workspace: "/work/demo", mcp: ["reqable"], skills: [] });
   if (path.includes("/skill-groups")) return json({ ok: true, groups: [{ id: "g1", name: "前端", order: 0 }], members: { "web-search": "g1" } });
   if (path.includes("/skills/import")) {
     return json({ ok: true, target: "/tmp/skills", cwd: "", warning: "", sources: [{ id: "user-agents", label: "~/.agents/skills", dir: "/h/.agents/skills", exists: true, skills: [{ name: "pebrel-runtime", dir: "/h/.agents/skills/pebrel-runtime", description: "fixture", blocked: false }] }] });
@@ -235,6 +236,9 @@ for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
     check(findText(tree, "插件 · @acme/box").length > 0, "a plugin group must be rendered");
     check(findText(tree, "全部开启").length >= 2, "both kinds need their own bulk switch, got " + findText(tree, "全部开启").length);
     check(findText(tree, "reqable").length > 0, "a registry tile must be rendered");
+    check(findText(tree, "存为工作区默认").length > 0, "the workspace default must be saveable from the view");
+    check(findText(tree, "清除默认").length > 0, "the workspace default must be clearable from the view");
+    check(findText(tree, "新对话默认：").length > 0, "the view must show the workspace default state");
   }
 }
 

@@ -1506,6 +1506,8 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
     const [busy, setBusy] = useState("");
+    // What a NEW conversation in this workspace starts with (saved from here).
+    const [preset, setPreset] = useState(null);
 
     const load = useCallback(async () => {
       if (sessionId === "") return;
@@ -1519,6 +1521,33 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     }, [sessionId]);
 
     useEffect(() => { load(); }, [load]);
+
+    // The preset belongs to the workspace the conversation runs in.
+    useEffect(() => {
+      const workspace = state && typeof state.workspace === "string" ? state.workspace : "";
+      if (workspace === "") { setPreset(null); return; }
+      getJson("/skill-mcp-manager/workspace-defaults?workspace=" + encodeURIComponent(workspace))
+        .then((data) => setPreset(data))
+        .catch(() => setPreset(null));
+    }, [state]);
+
+    async function savePreset(action) {
+      const workspace = state && typeof state.workspace === "string" ? state.workspace : "";
+      if (workspace === "") return;
+      setBusy("preset");
+      try {
+        const data = await postJson("/skill-mcp-manager/workspace-defaults", { workspace, action, session: sessionId });
+        setPreset(data);
+        setNotice(action === "clear"
+          ? "已清除这个工作区的新对话默认"
+          : "已保存为这个工作区的新对话默认（" + data.mcp.length + " 个 MCP / " + data.skills.length + " 个技能）");
+        setError("");
+      } catch (err) {
+        setError(errText(err));
+      } finally {
+        setBusy("");
+      }
+    }
 
     // Everything here writes the policy of THIS conversation only; the host applies
     // it on the next call (MCP connections are dropped the moment they turn off), so
@@ -1665,10 +1694,26 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         h("div", null,
           h("h2", { className: "smx-title" }, "能力管理"),
           h("div", { className: "smx-subtitle" },
-            "新对话默认全部关闭。这里的开关只影响这个对话，并且即时生效：关掉的 MCP 会立刻断开、从本对话的工具面与目录里消失，技能与插件自带的 MCP 调用会被本对话拒绝。"),
+            "新对话默认全部关闭（可按工作区存一份默认）。这里的开关只影响这个对话，并且即时生效：关掉的 MCP 会立刻断开、从本对话的工具面与目录里消失，技能与插件自带的 MCP 调用会被本对话拒绝。"),
         ),
         h("div", { className: "smx-head__meta" },
           h("span", { className: "smx-count" }, state === null ? "" : "本对话开启 " + onCount + " / " + (mcp.length + skills.length)),
+          preset === null
+            ? h("span", { className: "smx-count" }, "新对话默认：跟随会话")
+            : h("span", { className: "smx-count" }, "新对话默认：" + (preset.mcp.length + preset.skills.length) + " 项"),
+          h("button", {
+            type: "button",
+            className: "smx-btn",
+            title: "把这个对话现在开着的项，作为这个工作区新对话的默认",
+            disabled: busy !== "" || state === null || (state && state.workspace === ""),
+            onClick: () => savePreset("save-current"),
+          }, "存为工作区默认"),
+          h("button", {
+            type: "button",
+            className: "smx-btn",
+            disabled: busy !== "" || preset === null,
+            onClick: () => savePreset("clear"),
+          }, "清除默认"),
           h("button", { type: "button", className: "smx-btn", disabled: busy !== "", onClick: load }, "刷新"),
         ),
       ),
