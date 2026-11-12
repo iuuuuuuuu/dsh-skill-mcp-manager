@@ -100,11 +100,21 @@ const ctx = {
 // every plugin's agent context. The plugin must survive that and fall back.
 function makeBareSkillAgent(sessionId) {
   const guards = [];
+  const injectedShadows = [];
   const agent = {
+    injectedShadows,
     ctx: {
       tools: { register() { return () => {}; } },
       on(event, handler) { if (event === "tools/pre-execute") guards.push(handler); return () => {}; },
       get skills() { throw new Error('cannot get property "skills" without inject'); },
+      // cordis' own pattern: wait for the service, then register inside the scope that
+      // injects it. This is the path that keeps the shadow working on such a host.
+      inject(names, callback) {
+        if (Array.isArray(names) ? names.includes("skills") : names === "skills") {
+          callback({ skills: { register(skill) { injectedShadows.push(skill); return () => {}; } } });
+        }
+        return () => {};
+      },
       effect(fn) { fn(); return () => {}; },
     },
     session: { id: sessionId, seq: 0, surface: { nodes: [] }, eventAt: () => undefined },
@@ -312,6 +322,9 @@ const agent = makeAgent("sess-1");
   console.log("policy warnings:", skipped.length);
   check(skipped.length === 0, "reading a skill through a context without the inject must be handled silently, got: " + skipped.join(" | "));
   check(guard !== undefined, "the enforcement guard must still be installed without the skills inject");
+  console.log("injected shadows:", bare.injectedShadows.length);
+  check(bare.injectedShadows.length > 0, "the shadow must be registered through the injected scope when the agent context cannot read skills directly");
+  check(bare.injectedShadows.every((shadow) => shadow.invocation?.modelInvocable === false), "the injected shadow must be model-invisible");
   const denied = await guard({ name: "skill", arguments: { name: "skill-one" } }, async () => "allow");
   check(denied === "deny", "the guard must still deny a switched-off skill");
 }
