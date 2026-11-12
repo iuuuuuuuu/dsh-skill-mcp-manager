@@ -1631,25 +1631,56 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
 
-    // The card, limited to one line of content: frame + name + meta + switch. A plugin
-    // usually brings a few things the user mostly leaves off, so they keep the card
-    // look (not a bare list row) and cost one line of height each.
+    // Plugin-provided items use the SAME card as 能力库: dot · name · badge, a meta
+    // line, a sentence saying where the row comes from, its state, then the switch.
+    // One card per group is visible until 展开, so a plugin that brings twenty of
+    // them costs the page one card.
     function plugCard(kind, item, meta, badge) {
       const busyKey = kind + ":" + item.name;
-      return h("article", { key: busyKey, className: cx("smx-card", "smx-card--line", !item.enabled && "is-dimmed") },
-        h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle"), title: item.enabled ? "可用" : "本对话已关闭" }),
-        h("span", { className: "smx-card__name", title: item.name }, item.name),
-        badge ? h(Badge, { tone: "muted" }, badge) : null,
-        h("span", { className: "smx-card--line__meta", title: meta }, meta),
-        h("span", { className: "smx-card--line__switch" },
-          h(Switch, {
-            checked: item.enabled,
-            disabled: busy === busyKey || busy === "many:" + kind,
-            onChange: (next) => flip(kind, item.name, next),
-          }),
+      return h("article", { key: busyKey, className: cx("smx-card", !item.enabled && "is-dimmed") },
+        h("div", { className: "smx-card__head" },
+          h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle") }),
+          h("div", { className: "smx-card__ident" },
+            h("span", { className: "smx-card__name", title: item.name }, item.name),
+            h("span", { className: "smx-card__sub" }, meta),
+          ),
+          badge ? h(Badge, { tone: "muted" }, badge) : null,
+        ),
+        h("p", { className: "smx-card__desc" }, item.description || describeCapability(kind, item)),
+        h("div", { className: "smx-card__state" },
+          item.enabled ? "已启用 · 开关即时生效，无需重启" : "已关闭 · 本对话不加载，随时可以打开",
+        ),
+        h("div", { className: "smx-card__foot" },
+          h("label", { className: "smx-switchline" },
+            h(Switch, {
+              checked: item.enabled,
+              disabled: busy === busyKey || busy === "many:" + kind,
+              onChange: (next) => flip(kind, item.name, next),
+            }),
+            h("span", { className: "smx-switchline__label" }, item.enabled ? "启用中" : "已关闭"),
+          ),
         ),
       );
     }
+
+    // Where the row comes from, in one sentence — the plugin case is the one people
+    // ask about, so it says plainly that the row is not in the library registry.
+    function describeCapability(kind, item) {
+      if (kind === "mcp") {
+        if (item.source === "plugin") {
+          return "由插件注入的 loader 行（" + (item.id || item.name) + "），不在能力库注册表里。";
+        }
+        if (item.source === "workspace") {
+          return "来自工作区声明文件（" + (item.file || ".dsh/mcp.json") + "），不进注册表，也不写 profile patch。";
+        }
+        return item.tier === "eager" ? "常驻：对话开始就连接并注册原生工具。" : "按需：调用前先 mcp_load，工具描述不进上下文。";
+      }
+      if (item.provider === "filesystem") return "来自你自己的技能目录（filesystem provider）。";
+      return "由插件 " + (item.provider || "未知") + " 提供的技能" + (item.readonly ? "，随包只读" : "，可在这里关掉") + "。";
+    }
+    // The card, limited to one line of content: frame + name + meta + switch. A plugin
+    // usually brings a few things the user mostly leaves off, so they keep the card
+    // look (not a bare list row) and cost one line of height each.
     function tile(kind, item, meta, badge) {
       const key = kind + ":" + item.name;
       const running = busy === key || busy === "many:" + kind;
@@ -1821,9 +1852,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                 : item.source === "registry"
                   ? { key: "registry", title: "我的 MCP 服务器" }
                   : { key: "plugin:" + (item.owner || ""), title: item.owner ? "插件 \u00b7 " + item.owner : "未归属插件" }),
-              (item) => (item.source === "workspace"
-                ? [item.transport, item.file || "工作区声明"].filter(Boolean).join(" \u00b7 ")
-                : [item.source === "registry" ? item.transport : "插件自带", item.source === "registry" ? item.tier : "", item.toolCount > 0 ? item.toolCount + " 个工具" : ""].filter(Boolean).join(" \u00b7 ")),
+              (item) => [item.transport, item.source === "registry" ? item.tier : "", item.toolCount > 0 ? item.toolCount + " 个工具" : ""].filter(Boolean).join(" \u00b7 "),
               (item) => (item.source === "registry" && item.tier === "eager" ? "常驻" : null)),
             section("skills", "技能", skills,
               (item) => {
@@ -1906,10 +1935,6 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // A plugin card keeps its frame but carries one line of content; 展开 puts every
     // card into one fixed-height scrolling box, so the page never grows with the
     // number of items a plugin brings.
-    ".smx-card.smx-card--line { flex-direction:row; align-items:center; gap:8px; padding:6px 10px; }",
-    ".smx-card.smx-card--line .smx-card__name { flex:none; max-width:38%; }",
-    ".smx-card--line__meta { flex:1; min-width:0; font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
-    ".smx-card--line__switch { flex:none; display:flex; align-items:center; }",
     ".smx-pluginbox { display:flex; flex-direction:column; gap:6px; padding:6px; height:min(46vh, 320px); overflow:auto; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-2); }",
     // The group header is a fold toggle (the chevron is the library page's).
     ".smx-capgroup__toggle { display:flex; align-items:center; gap:5px; padding:0; border:0; background:none; cursor:pointer; color:inherit; font:inherit; }",
@@ -1956,6 +1981,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-card__name { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
     ".smx-card__sub { font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
     ".smx-card__desc { margin:0; font-size:12px; line-height:1.5; color:var(--dsw-alias-label-secondary); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }",
+    ".smx-card__state { font-size:11px; color:var(--dsw-alias-label-secondary); }",
     ".smx-card__desc.is-empty { font-style:italic; }",
     ".smx-card__status { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:11px; color:var(--dsw-alias-label-secondary); }",
     ".smx-card__hint { font-size:11px; color:var(--dsw-alias-label-secondary); }",

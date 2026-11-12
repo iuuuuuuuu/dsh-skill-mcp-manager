@@ -6,6 +6,10 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
+- **插件提供的条目统一用能力库那张卡片**（能力管理）：插件组的 MCP 与技能都渲染成能力库同款卡片 —— 状态点 · 名称 · 徽标 / 副行（`streamable-http`、`来源 agent-notes`）/ 一句来源说明 / 状态行（`已启用 · 开关即时生效，无需重启`）/ 分隔线 · 开关（`启用中` / `已关闭`）。折叠只显示**第一张卡片**，组头「展开 K 个」把全部卡片放进固定高度（`min(46vh,320px)`）盒子内部滚动。
+  - 来源说明由 `describeCapability()` 生成：插件注入的 MCP 行说「由插件注入的 loader 行（mcp-box），不在能力库注册表里。」，工作区声明的说文件路径，注册表的按 eager/on-demand 说语义；技能按 `filesystem` / 插件 provider 分别说明，只读的注明随包只读。为此 `getSessionCapabilities` 的 MCP 行新增 `id` 字段（loader 行 id）。
+  - 副行改为**传输/来源**（原来写「插件自带」），与能力库一致。
+  - 测试：`client-render-smoke` 断言折叠时出现能力库同款卡片（`.smx-card`，非 `--line`）、文案含「由插件注入的 loader 行」「已启用」「启用中」。真机截图判读：`box` 与 `agent-notes` 两张卡片结构与能力库一致，0 console 异常。
 - **插件组的条目 = 一行高的卡片**（能力管理，定稿）：
   - 插件组的每个条目仍是**卡片**（`.smx-card.smx-card--line`：边框/圆角/网格都保留），只是**内容压成一行** —— 状态点 · 名称 · 徽标 · 来源 · 开关。
   - **折叠态显示第一张卡片**（开启的排最前），组头 `N / M  全开 全关 展开 K 个`；条目多于 1 时才有「展开」。**不是裸行，也不是只留组头。**

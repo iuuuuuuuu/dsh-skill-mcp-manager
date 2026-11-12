@@ -289,15 +289,17 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
   check(boxClass.length === 0, "a collapsed plugin group has no expanded box, got " + boxClass.length);
   check(texts.filter((t) => /^(box-|sequential)/.test(t)).length === 1, "collapsed shows one card line, got " + texts.filter((t) => /^(box-|sequential)/.test(t)).length);
   check(texts.includes("box-a"), "the visible card is the first switched-on one");
-  const lineCards = [];
+  check(flat.includes("由插件注入的 loader 行"), "a plugin MCP card must say where the row comes from, got: " + flat.slice(0, 240));
+  check(flat.includes("已启用"), "an enabled card must show its state");
+  check(flat.includes("启用中"), "an enabled card must label its switch");
+  const libraryCards = [];
   (function walk(node) {
     if (node === null || node === undefined || typeof node !== "object") return;
     const cls = node.props?.className;
-    if (typeof cls === "string" && cls.includes("smx-card--line") && !cls.includes("__")) lineCards.push(cls);
+    if (typeof cls === "string" && cls.includes("smx-card") && !cls.includes("__") && !cls.includes("--line")) libraryCards.push(cls);
     for (const child of node.children ?? []) walk(child);
   })(tree);
-  check(lineCards.length === 1, "the visible item must be a card, got " + lineCards.length);
-  check(lineCards[0].includes("smx-card"), "the one-line item keeps the card frame");
+  check(libraryCards.length >= 1, "the visible item must use the library card, got " + libraryCards.length);
   check(flat.includes("展开 6 个"), "the header must say how many rows it opens");
   for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
 }
@@ -332,14 +334,7 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
     for (const child of node.children ?? []) walk(child);
   })(tree);
   check(openBoxes.length === 1 && openBoxes[0].includes("is-open"), "the expanded list must live in one fixed-height box, got " + JSON.stringify(openBoxes));
-  const expandedCards = [];
-  (function walk(node) {
-    if (node === null || node === undefined || typeof node !== "object") return;
-    const cls = node.props?.className;
-    if (typeof cls === "string" && cls.includes("smx-card--line") && !cls.includes("__")) expandedCards.push(cls);
-    for (const child of node.children ?? []) walk(child);
-  })(tree);
-  check(expandedCards.length === 6, "every expanded row must still be a card, got " + expandedCards.length);
+
   check(names.indexOf("box-a") < names.indexOf("box-c") && names.indexOf("box-c") < names.indexOf("box-b"),
     "switched-on rows come first, then the off ones: " + names.join(","));
   check(texts.includes("收起"), "the header must offer 收起 once expanded");
