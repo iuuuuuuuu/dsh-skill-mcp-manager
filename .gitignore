@@ -4,6 +4,7 @@ node_modules/
 .DS_Store
 dist/
 .test-*/
+%SystemDrive%/
 .playwright-mcp/
 pnpm-lock.yaml
 test/patch.yml
