@@ -243,7 +243,17 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
     // Plugin groups start folded (same rule as the library page): the header is there,
     // the cards are not — until the header is clicked.
     check(findText(tree, "插件 \u00b7 @acme/box").length > 0, "a plugin group header must still be rendered");
-    check(findText(tree, "sequential").length === 0, "a folded plugin group must not render its cards");
+    const pluginCards = [];
+    (function walk(node) {
+      if (node === null || node === undefined || typeof node !== "object") return;
+      const cls = node.props?.className;
+      if (typeof cls === "string" && cls.startsWith("smx-card") && !cls.includes("__")) pluginCards.push(cls);
+      for (const child of node.children ?? []) walk(child);
+    })(tree);
+    check(pluginCards.every((cls) => !cls.includes("--row") && !cls.includes("--line")), "plugin cards must keep the standard card style, got " + JSON.stringify(pluginCards.slice(0, 4)));
+    // Owner's rule: plugin groups are EXPANDED by default — their cards render, in the
+    // same style as every other group's cards.
+    check(findText(tree, "sequential").length > 0, "plugin groups must be expanded by default (their cards render)");
     // Plugin groups render one-line rows with an overflow modal, and enabled rows first.
     check(findText(tree, "展开更多").length === 0, "a folded group must not offer the overflow button either");
     check(findText(tree, "系统").length > 0, "the 系统 group header must be rendered");
@@ -252,92 +262,6 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
     check(findText(tree, "清除默认").length > 0, "the workspace default must be clearable from the view");
     check(findText(tree, "新对话默认：").length > 0, "the view must show the workspace default state");
   }
-}
-
-// 3) an UNFOLDED plugin group renders one-line rows, enabled first, with the
-//    overflow button instead of tiling every row onto the page.
-{
-  for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
-  // openGroups is hook #4 (state, error, notice, busy, openGroups, more, preset).
-  stateOverrides["CapabilityView:4"] = { "plugin:@acme/box": true };
-  instances.clear();
-  hookSlots = [];
-  const props = view.options.inject ? view.options.inject("sess-1") : {};
-  renderComponent("CapabilityView(loading)", view.component, props);
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  const tree = renderComponent("CapabilityView(rows)", view.component, props, true);
-  const texts = [];
-  (function walk(node) {
-    if (node === null || node === undefined || typeof node !== "object") return;
-    for (const child of node.children ?? []) {
-      if (typeof child === "string") texts.push(child);
-      else walk(child);
-    }
-  })(tree);
-  const flat = texts.join(" | ");
-  console.log("plugin rows (collapsed):", texts.filter((t) => /^(box-|sequential)/.test(t)).join(","));
-  check(flat.includes("展开 "), "every plugin group must offer 展开, got: " + flat.slice(0, 200));
-  check(!flat.includes("smx-modal"), "there is no modal any more — the box grows in place");
-  const boxClass = [];
-  (function walk(node) {
-    if (node === null || node === undefined || typeof node !== "object") return;
-    const cls = node.props?.className;
-    if (typeof cls === "string" && cls.includes("smx-pluginbox")) boxClass.push(cls);
-    for (const child of node.children ?? []) walk(child);
-  })(tree);
-  // Collapsed: exactly ONE one-line CARD (a card, not a bare row, not header-only).
-  check(boxClass.length === 0, "a collapsed plugin group has no expanded box, got " + boxClass.length);
-  check(texts.filter((t) => /^(box-|sequential)/.test(t)).length === 1, "collapsed shows one card line, got " + texts.filter((t) => /^(box-|sequential)/.test(t)).length);
-  check(texts.includes("box-a"), "the visible card is the first switched-on one");
-  check(flat.includes("由插件注入的 loader 行"), "a plugin MCP card must say where the row comes from, got: " + flat.slice(0, 240));
-  check(!flat.includes("已启用 · 开关即时生效"), "the one-line card must not carry a separate status line");
-  const libraryCards = [];
-  (function walk(node) {
-    if (node === null || node === undefined || typeof node !== "object") return;
-    const cls = node.props?.className;
-    if (typeof cls === "string" && cls.includes("smx-card") && !cls.includes("__") && !cls.includes("--line")) libraryCards.push(cls);
-    for (const child of node.children ?? []) walk(child);
-  })(tree);
-  check(libraryCards.length >= 1, "the visible item must use the library card, got " + libraryCards.length);
-  check(flat.includes("展开 6 个"), "the header must say how many rows it opens");
-  for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
-}
-
-// 4) 展开 grows the same box and shows every row
-{
-  for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
-  stateOverrides["CapabilityView:4"] = { "plugin:@acme/box": true };
-  stateOverrides["CapabilityView:5"] = { "plugin:@acme/box": true };
-  instances.clear();
-  hookSlots = [];
-  const props = view.options.inject ? view.options.inject("sess-1") : {};
-  renderComponent("CapabilityView(loading)", view.component, props);
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  const tree = renderComponent("CapabilityView(expanded)", view.component, props, true);
-  const texts = [];
-  (function walk(node) {
-    if (node === null || node === undefined || typeof node !== "object") return;
-    for (const child of node.children ?? []) {
-      if (typeof child === "string") texts.push(child);
-      else walk(child);
-    }
-  })(tree);
-  const names = texts.filter((t) => /^(box-|sequential)/.test(t));
-  console.log("plugin rows (expanded):", names.join(","));
-  check(names.length === 6, "展开 must show every row, got " + names.length);
-  const openBoxes = [];
-  (function walk(node) {
-    if (node === null || node === undefined || typeof node !== "object") return;
-    const cls = node.props?.className;
-    if (typeof cls === "string" && cls.includes("smx-pluginbox")) openBoxes.push(cls);
-    for (const child of node.children ?? []) walk(child);
-  })(tree);
-  check(openBoxes.length === 1 && openBoxes[0].includes("is-open"), "the expanded list must live in one fixed-height box, got " + JSON.stringify(openBoxes));
-
-  check(names.indexOf("box-a") < names.indexOf("box-c") && names.indexOf("box-c") < names.indexOf("box-b"),
-    "switched-on rows come first, then the off ones: " + names.join(","));
-  check(texts.includes("收起"), "the header must offer 收起 once expanded");
-  for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
 }
 
 if (failed.length > 0) {

@@ -1524,8 +1524,6 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
   // A tab in the conversation's view switcher (next to 轨迹). It edits the policy
   // of THIS conversation only: turning a server or a skill off drops it from this
   // chat's tool surface and catalog without touching 能力库's global settings.
-  // How many plugin rows stay on the page before "展开更多" takes over.
-  const PLUGIN_ROW_LIMIT = 5;
 
   function CapabilityView(props) {
     const sessionId = typeof props.sessionId === "string" ? props.sessionId : "";
@@ -1537,9 +1535,6 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // for (my servers, the workspace, 系统) are open, a plugin's own rows are not.
     const [openGroups, setOpenGroups] = useState({});
     // Plugin groups are long and mostly off: they render as one-line rows, and the
-    // overflow opens in a modal instead of pushing the page taller.
-    // A plugin group is a fixed-height box: one row visible, the rest inside it.
-    const [openBox, setOpenBox] = useState({});
     // What a NEW conversation in this workspace starts with (saved from here).
     const [preset, setPreset] = useState(null);
 
@@ -1631,47 +1626,11 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
 
-    // Plugin items use 能力库's card frame, clamped to EXACTLY one line of content:
-    // dot · name · badge · source · switch. The description never wraps — a plugin
-    // that ships long prose would otherwise push the card to three lines and the
-    // page back to being a wall of text.
-    function plugCard(kind, item, meta, badge) {
-      const busyKey = kind + ":" + item.name;
-      const detail = item.description || describeCapability(kind, item);
-      return h("article", { key: busyKey, className: cx("smx-card", "smx-card--row", !item.enabled && "is-dimmed"), title: detail },
-        h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle") }),
-        h("span", { className: "smx-card__name", title: item.name }, item.name),
-        badge ? h(Badge, { tone: "muted" }, badge) : null,
-        h("span", { className: "smx-card--row__detail" }, meta ? meta + " \u00b7 " + detail : detail),
-        h("span", { className: "smx-card--row__switch" },
-          h(Switch, {
-            checked: item.enabled,
-            disabled: busy === busyKey || busy === "many:" + kind,
-            onChange: (next) => flip(kind, item.name, next),
-          }),
-        ),
-      );
-    }
     // Plugin-provided items use the SAME card as 能力库: dot · name · badge, a meta
     // line, a sentence saying where the row comes from, its state, then the switch.
     // One card per group is visible until 展开, so a plugin that brings twenty of
     // them costs the page one card.
 
-    // Where the row comes from, in one sentence — the plugin case is the one people
-    // ask about, so it says plainly that the row is not in the library registry.
-    function describeCapability(kind, item) {
-      if (kind === "mcp") {
-        if (item.source === "plugin") {
-          return "由插件注入的 loader 行（" + (item.id || item.name) + "），不在能力库注册表里。";
-        }
-        if (item.source === "workspace") {
-          return "来自工作区声明文件（" + (item.file || ".dsh/mcp.json") + "），不进注册表，也不写 profile patch。";
-        }
-        return item.tier === "eager" ? "常驻：对话开始就连接并注册原生工具。" : "按需：调用前先 mcp_load，工具描述不进上下文。";
-      }
-      if (item.provider === "filesystem") return "来自你自己的技能目录（filesystem provider）。";
-      return "由插件 " + (item.provider || "未知") + " 提供的技能" + (item.readonly ? "，随包只读" : "，可在这里关掉") + "。";
-    }
     // The card, limited to one line of content: frame + name + meta + switch. A plugin
     // usually brings a few things the user mostly leaves off, so they keep the card
     // look (not a bare list row) and cost one line of height each.
@@ -1741,14 +1700,12 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               // Empty stays open so the "no servers yet" hint is visible.
               const unfolded = openGroups[bucket.key] !== undefined
                 ? openGroups[bucket.key]
-                : (!bucket.key.startsWith("plugin:") || bucket.items.length === 0);
-              // Plugin rows: switched-on first, so the page answers "what is on" at a
-              // glance; beyond PLUGIN_ROW_LIMIT the rest moves into the modal.
+                : true; // every group is expanded by default; the header can fold it
+              // Plugin groups keep the same cards as every other group; only the ORDER
+              // differs: what this conversation switched on comes first.
               const ordered = bucket.key.startsWith("plugin:")
                 ? [...bucket.items].sort((a, b) => (b.enabled ? 1 : 0) - (a.enabled ? 1 : 0) || a.name.localeCompare(b.name))
                 : bucket.items;
-              const shown = bucket.key.startsWith("plugin:") ? ordered.slice(0, PLUGIN_ROW_LIMIT) : ordered;
-              const hidden = bucket.key.startsWith("plugin:") ? ordered.slice(PLUGIN_ROW_LIMIT) : [];
               return h("div", { key: bucket.key, className: "smx-capgroup" },
                 h("div", { className: "smx-capgroup__head" },
                   h("button", {
@@ -1774,30 +1731,11 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                       disabled: disabled,
                       onClick: () => flipMany(kind, bucket.items.map((item) => item.name), false, bucket.title),
                     }, "全关"),
-                    bucket.key.startsWith("plugin:") && bucket.items.length > 1
-                      ? h("button", {
-                          type: "button",
-                          className: "smx-btn smx-btn--ghost",
-                          onClick: () => setOpenBox((current) => ({ ...current, [bucket.key]: !openBox[bucket.key] })),
-                        }, openBox[bucket.key] ? "收起" : "展开 " + bucket.items.length + " 个")
-                      : null,
                   ),
                 ),
-                unfolded
-                  ? (bucket.key.startsWith("plugin:")
-                      // A plugin group is ONE CARD LINE until 展开: the card keeps its
-                      // frame (it is still a card), it just carries one line of content.
-                      // 展开 puts every card into a fixed-height box that scrolls inside,
-                      // so the page never grows with the number of plugin items.
-                      ? (openBox[bucket.key]
-                          ? h("div", { className: "smx-pluginbox is-open" },
-                              ordered.map((item) => plugCard(kind, item, metaOf(item), badgeOf(item))),
-                            )
-                          : h("div", { className: "smx-cap-grid" },
-                              ordered.slice(0, 1).map((item) => plugCard(kind, item, metaOf(item), badgeOf(item))),
-                            ))
-                      : h("div", { className: "smx-cap-grid" }, shown.map((item) => tile(kind, item, metaOf(item), badgeOf(item)))))
-                  : null,
+                // Plugin-provided groups are just another card grid: same card, same
+                // style, expanded by default. Only the ORDER differs (switched-on first).
+                unfolded ? h("div", { className: "smx-cap-grid" }, ordered.map((item) => tile(kind, item, metaOf(item), badgeOf(item)))) : null,
               );
             })),
       );
@@ -1929,7 +1867,6 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // A plugin card keeps its frame but carries one line of content; 展开 puts every
     // card into one fixed-height scrolling box, so the page never grows with the
     // number of items a plugin brings.
-    ".smx-pluginbox { display:flex; flex-direction:column; gap:6px; padding:6px; height:min(46vh, 320px); overflow:auto; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-2); }",
     // The group header is a fold toggle (the chevron is the library page's).
     ".smx-capgroup__toggle { display:flex; align-items:center; gap:5px; padding:0; border:0; background:none; cursor:pointer; color:inherit; font:inherit; }",
     ".smx-page__body { display:flex; flex-direction:column; flex:1; min-height:0; overflow:auto; padding-bottom:28px; padding-left:max(max(16px,min(4vw,48px)),50% - 480px); padding-right:max(max(16px,min(4vw,48px)),50% - 480px); }",
@@ -1978,11 +1915,6 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // One line of content inside the library card frame; long prose ellipsises",
     // A plugin card: 能力库's frame, clamped to one line of content (no wrapping —
     // a long plugin description would otherwise stretch the card to three lines).
-    ".smx-card.smx-card--row { flex-direction:row; align-items:center; gap:8px; padding:6px 10px; }",
-    ".smx-card.smx-card--row .smx-card__name { flex:none; max-width:34%; }",
-    ".smx-card--row__detail { flex:1; min-width:0; font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
-    ".smx-card--row__switch { flex:none; display:flex; align-items:center; }",
-    ".smx-card__state { font-size:11px; color:var(--dsw-alias-label-secondary); }",
     ".smx-card__desc.is-empty { font-style:italic; }",
     ".smx-card__status { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:11px; color:var(--dsw-alias-label-secondary); }",
     ".smx-card__hint { font-size:11px; color:var(--dsw-alias-label-secondary); }",
