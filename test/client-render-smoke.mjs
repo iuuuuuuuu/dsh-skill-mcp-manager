@@ -69,7 +69,7 @@ globalThis.fetch = async (url) => {
         { name: "box-e", source: "plugin", owner: "@acme/box", tier: "plugin", transport: "stdio", toolCount: 0, enabled: false },
       ],
       skills: [
-        { name: "web-search", description: "", provider: "filesystem", readonly: false, enabled: true },
+        { name: "web-search", description: "记录设计决策", provider: "filesystem", readonly: false, enabled: true },
         { name: "agent-notes", description: "", provider: "agent-notes", readonly: true, enabled: false },
       ],
     });
@@ -240,6 +240,7 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
     check(findText(tree, "全部开启").length >= 2, "both kinds need their own bulk switch, got " + findText(tree, "全部开启").length);
     check(findText(tree, "reqable").length > 0, "a registry tile must be rendered");
     check(findText(tree, "详情").length >= 2, "every card must offer 详情, got " + findText(tree, "详情").length);
+    check(findText(tree, "记录设计决策").length > 0, "a skill card must show its description");
     console.log("view checks (folded defaults) done");
     // Plugin groups start folded (same rule as the library page): the header is there,
     // the cards are not — until the header is clicked.

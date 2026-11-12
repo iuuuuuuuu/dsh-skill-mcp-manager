@@ -1660,6 +1660,8 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
           h("span", { className: "smx-cap__name", title: item.name }, item.name),
           badge ? h(Badge, { tone: "muted" }, badge) : null,
         ),
+        // A single line of the description: the card stays compact, 详情 has the rest.
+        item.description ? h("div", { className: "smx-cap__desc", title: item.description }, item.description) : null,
         h("div", { className: "smx-cap__meta" }, meta),
         h("div", { className: "smx-cap__foot" },
           h("label", { className: "smx-switchline" },
@@ -1915,6 +1917,8 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-cap__head { display:flex; align-items:center; gap:8px; min-width:0; }",
     ".smx-cap .smx-dot { margin-top:0; }",
     ".smx-cap__name { flex:1; min-width:0; font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    // Two lines at most, so a chatty description never turns a card into a wall.
+    ".smx-cap__desc { font-size:11px; line-height:1.45; color:var(--dsw-alias-label-secondary); overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; word-break:break-word; }",
     ".smx-cap__meta { font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
     ".smx-cap__foot { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:auto; padding-top:6px; border-top:1px solid var(--dsw-alias-border-l1); }",
     ".smx-cap__hint { font-size:11px; color:var(--dsw-alias-label-secondary); }",

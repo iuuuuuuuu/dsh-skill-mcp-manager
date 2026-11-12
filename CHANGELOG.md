@@ -6,6 +6,11 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
+- **修：能力管理里 MCP / 技能卡片没有描述**：两个原因叠在一起 ——
+  1. `tile()`（会话视图的卡片）**从来没有渲染描述那一行**，技能的描述明明在数据里也被丢掉了；MCP 行更是**根本没带** `description`。
+  2. 插件注入的 MCP 行（loader 行）**没有自报描述**：它不是注册表条目，没连接前拿不到 `serverDescription`；现在读 loader 行的 `config.description`（多数 bundle 不写），没有就**留空，不编造**。
+  - 修法：注册表行取 `serverDescription`（截断 300）、工作区行取声明的 `notes`、插件行取 loader 配置里的 `description`；卡片在标题与元信息之间渲染一行描述（`-webkit-line-clamp:2`，两行封顶），完整内容与工具/正文仍看「详情」。
+  - 真机判读：`reqable`、`web-search`、`agent-notes` 三张卡片都出描述了（两行内截断），`box`（插件 MCP）如实留空，0 console 异常。
 - **能力管理里能看「详情」了**：每张卡片右下角多一个「详情」按钮，右侧抽屉显示 ——
   - **MCP**：传输/档位/来源、服务器自报描述、备注，以及它提供的**工具清单**（名称 + 描述，已禁用的工具不列）。没有工具快照时不装作「没有工具」，而是明确说「还没有工具快照：可以在能力库点「刷新快照」，或先在本对话打开它一次」。
   - **技能**：来源、是否随包只读、SKILL.md 路径、frontmatter 里的描述，以及 **SKILL.md 正文原文**（等宽、带边框、可滚动）。
