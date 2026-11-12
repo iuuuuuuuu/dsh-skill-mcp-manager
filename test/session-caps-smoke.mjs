@@ -65,6 +65,7 @@ const effects = [];
 const preSteps = [];
 const toolByName = new Map();
 const webServer = { register(route) { routes.push(route); return () => {}; } };
+const warnings = [];
 const ctx = {
   tools: { register(definition) { toolByName.set(definition.name, definition); return () => {}; } },
   get skills() {
@@ -88,8 +89,26 @@ const ctx = {
     if (name === "skills") return liveSkillsService;
     return undefined;
   },
-  logger: { warn() {}, error() {}, info() {} },
+  logger: { warn(message) { warnings.push(String(message)); }, error() {}, info() {} },
 };
+
+// An agent whose context does NOT inject `skills`: reading it throws cordis'
+// "cannot get property skills without inject", which is the host's normal shape for
+// every plugin's agent context. The plugin must survive that and fall back.
+function makeBareSkillAgent(sessionId) {
+  const guards = [];
+  const agent = {
+    ctx: {
+      tools: { register() { return () => {}; } },
+      on(event, handler) { if (event === "tools/pre-execute") guards.push(handler); return () => {}; },
+      get skills() { throw new Error('cannot get property "skills" without inject'); },
+      effect(fn) { fn(); return () => {}; },
+    },
+    session: { id: sessionId, seq: 0, surface: { nodes: [] }, eventAt: () => undefined },
+    guards,
+  };
+  return agent;
+}
 
 function makeAgent(sessionId) {
   const guards = [];
@@ -257,6 +276,25 @@ const agent = makeAgent("sess-1");
   check((cleared.body.skills ?? []).every((s) => s.enabled === false), "bulk skills off must disable every skill");
   const empty = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
   check(empty["sess-1"] === undefined, "a session with nothing enabled must be dropped from the file, got " + JSON.stringify(empty));
+}
+
+// 5b) the host's normal agent shape (no `skills` inject) must not break a switch
+{
+  const bare = makeBareSkillAgent("sess-bare");
+  await preStep(bare);
+  const on = await caps("POST", { session: "sess-bare", kind: "skills", name: "skill-one", enabled: true });
+  console.log("bare agent toggle ->", on.status, JSON.stringify(on.body.skills?.map((x) => x.name + ":" + x.enabled)));
+  check(on.status === 200, "toggling a skill on a context without the skills inject must answer 200, got " + on.status + " " + JSON.stringify(on.body).slice(0, 120));
+  check(on.body.skills?.some((x) => x.name === "skill-one" && x.enabled === true), "the switch must still be recorded");
+  const off = await caps("POST", { session: "sess-bare", kind: "skills", name: "skill-one", enabled: false });
+  check(off.status === 200, "switching it back off must answer 200 too, got " + off.status);
+  const guard = bare.guards[0];
+  const skipped = warnings.filter((line) => line.includes("skill policy skipped"));
+  console.log("policy warnings:", skipped.length);
+  check(skipped.length === 0, "reading a skill through a context without the inject must be handled silently, got: " + skipped.join(" | "));
+  check(guard !== undefined, "the enforcement guard must still be installed without the skills inject");
+  const denied = await guard({ name: "skill", arguments: { name: "skill-one" } }, async () => "allow");
+  check(denied === "deny", "the guard must still deny a switched-off skill");
 }
 
 // 6) a per-session decision never leaks into another conversation
