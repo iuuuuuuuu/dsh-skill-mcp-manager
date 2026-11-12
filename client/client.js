@@ -765,6 +765,8 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
 
   function McpPanel() {
     const [entries, setEntries] = useState(null);
+    // Workspaces the pin picker offers (a pinned server only mounts there).
+    const [workspaces, setWorkspaces] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
@@ -798,6 +800,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         const data = await getJson("/skill-mcp-manager/mcp" + (rv ? "?reveal=1" : ""));
         setEntries(data.entries || []);
         setNative(data.native || { supported: false, entries: [] });
+        if (Array.isArray(data.workspaces)) setWorkspaces(data.workspaces);
       } catch (err) {
         setError(errText(err));
       } finally {
@@ -935,6 +938,18 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         }));
       } catch (err) {
         setChecks((current) => ({ ...current, [entry.name]: { status: "fail", error: errText(err) } }));
+      }
+    }
+
+    // A registry server can be pinned to one workspace: elsewhere it is neither
+    // listed nor mounted, which is what makes a project-local server local.
+    async function pinWorkspace(entry, workspace) {
+      try {
+        await postJson("/skill-mcp-manager/mcp/workspace", { name: entry.name, workspace });
+        setNotice(workspace === "" ? entry.name + " 已改为全局" : entry.name + " 只在这个工作区生效");
+        await refresh(reveal);
+      } catch (err) {
+        setError(errText(err));
       }
     }
 
@@ -1406,6 +1421,15 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               h("div", { className: "smx-drawer__head" },
                 h("span", { className: "smx-drawer__title" }, opened.name),
                 h(Badge, { tone: TIER_TONE[opened.tier] || "muted" }, TIER_LABEL[opened.tier] || opened.tier),
+                h("select", {
+                  className: "smx-select smx-select--tight",
+                  title: "只在这个工作区的对话里生效",
+                  value: opened.workspace || "",
+                  onChange: (event) => pinWorkspace(opened, event.target.value),
+                },
+                  h("option", { value: "" }, "全部工作区"),
+                  (workspaces || []).map((item) => h("option", { key: item.id, value: item.path }, "仅 " + (item.title || item.path))),
+                ),
                 h("button", { type: "button", className: "smx-btn", onClick: () => { setDetail(""); setOutput(""); } }, "关闭"),
               ),
               detailBlock(opened),
@@ -1723,13 +1747,24 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         ? h(Empty, null, sessionId === "" ? "这个视图需要一个会话" : "加载中\u2026")
         : h("div", { className: "smx-groups" },
             section("mcp", "MCP 服务器", mcp,
-              (item) => (item.source === "registry"
-                ? { key: "registry", title: "我的 MCP 服务器" }
-                : { key: "plugin:" + (item.owner || ""), title: item.owner ? "插件 \u00b7 " + item.owner : "未归属插件" }),
-              (item) => [item.source === "registry" ? item.transport : "插件自带", item.source === "registry" ? item.tier : "", item.toolCount > 0 ? item.toolCount + " 个工具" : ""].filter(Boolean).join(" \u00b7 "),
+              (item) => (item.source === "workspace"
+                ? { key: "workspace", title: "工作区自带" }
+                : item.source === "registry"
+                  ? { key: "registry", title: "我的 MCP 服务器" }
+                  : { key: "plugin:" + (item.owner || ""), title: item.owner ? "插件 \u00b7 " + item.owner : "未归属插件" }),
+              (item) => (item.source === "workspace"
+                ? [item.transport, item.file || "工作区声明"].filter(Boolean).join(" \u00b7 ")
+                : [item.source === "registry" ? item.transport : "插件自带", item.source === "registry" ? item.tier : "", item.toolCount > 0 ? item.toolCount + " 个工具" : ""].filter(Boolean).join(" \u00b7 ")),
               (item) => (item.source === "registry" && item.tier === "eager" ? "常驻" : null)),
             section("skills", "技能", skills,
               (item) => {
+                // A skill whose file lives inside this workspace is the workspace's own,
+                // and starts switched on (see the seeding rule on the host).
+                const workspace = state && typeof state.workspace === "string" ? state.workspace : "";
+                if (workspace !== "" && typeof item.path === "string" && item.path !== ""
+                  && item.path.toLowerCase().startsWith(workspace.toLowerCase())) {
+                  return { key: "workspace", title: "工作区自带" };
+                }
                 const origin = originOf(item);
                 return origin.kind === "plugin"
                   ? { key: "plugin:" + origin.key, title: "插件 \u00b7 " + (origin.package || origin.label || origin.key) }

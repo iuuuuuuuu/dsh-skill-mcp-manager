@@ -31,6 +31,7 @@ await writeFile(join(dataDir, "registry.json"), JSON.stringify({
 const skills = {
   "only-standing": { name: "only-standing", description: "Only in the standing scope", path: join(tmp, "standing", "SKILL.md"), provider: "filesystem", invocation: { modelInvocable: true, userInvocable: true }, content: "# standing" },
   "only-conversation": { name: "only-conversation", description: "Only in the conversation scope", path: join(tmp, "conv", "SKILL.md"), provider: "agent-notes", invocation: { modelInvocable: true, userInvocable: true }, content: "# conv" },
+  "workspace-skill": { name: "workspace-skill", description: "Lives in the workspace", path: join(tmp, "workspace-a", ".agents", "skills", "workspace-skill", "SKILL.md"), provider: "filesystem", invocation: { modelInvocable: true, userInvocable: true }, content: "# ws" },
   "skill-one": { name: "skill-one", description: "First fixture", path: join(tmp, "one", "SKILL.md"), provider: "filesystem", invocation: { modelInvocable: true, userInvocable: true }, content: "# one" },
 };
 
@@ -91,7 +92,7 @@ const ctx = {
     if (name === "workingDirectory") return { ensure: async (agent) => agent?.session?.cwd ?? currentWorkspace };
     return undefined;
   },
-  logger: { warn(message) { warnings.push(String(message)); }, error() {}, info() {} },
+  logger: { warn(message) { warnings.push(String(message)); }, error() {}, info(message) { if (String(message).startsWith("DEBUG")) console.log(String(message)); } },
 };
 
 // An agent whose context does NOT inject `skills`: reading it throws cordis'
@@ -175,6 +176,9 @@ async function preStep(agent) {
 }
 const catalogText = (decision) => (decision.messages ?? []).map((m) => m.content?.[0]?.text ?? "").join("\n");
 
+// the workspace declares one MCP server of its own
+await mkdir(currentWorkspace, { recursive: true });
+await writeFile(join(currentWorkspace, ".mcp.json"), JSON.stringify({ mcpServers: { "ws-server": { command: "node", args: ["ws.js"] } } }, null, 2), "utf8");
 await apply(ctx, { dataDir, profile: "__test__", importNativeMcp: false });
 await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -189,17 +193,26 @@ const agent = makeAgent("sess-1");
   console.log("initial:", JSON.stringify({ mcp: res.body.mcp?.map((m) => m.name + ":" + m.enabled), skills: res.body.skills?.map((s) => s.name + ":" + s.enabled) }));
   check(res.status === 200, "GET session-caps must answer 200");
   check(!(res.body.mcp ?? []).some((m) => m.name === "beta"), "a globally disabled entry must not appear");
-  check((res.body.mcp ?? []).length === 2, "the registry entry and the plugin row must both be listed, got " + JSON.stringify((res.body.mcp ?? []).map((m) => m.name)));
+  check((res.body.mcp ?? []).length === 3, "registry + plugin + workspace rows must all be listed, got " + JSON.stringify((res.body.mcp ?? []).map((m) => m.name)));
+  check((res.body.mcp ?? []).some((m) => m.source === "workspace" && m.name === "ws-server"), "the workspace-declared server must be listed");
   const pluginRow = (res.body.mcp ?? []).find((m) => m.source === "plugin");
   check(pluginRow !== undefined && pluginRow.name === "sequential", "the plugin-mounted row must be listed by its server name");
   check(pluginRow !== undefined && pluginRow.owner === "", "an unattributable plugin row keeps an empty owner (the page shows 未归属插件)");
-  check((res.body.mcp ?? []).every((m) => m.enabled === false), "every MCP server must start OFF");
-  check((res.body.skills ?? []).every((s) => s.enabled === false), "every skill must start OFF");
+  // Default is closed for everything the USER owns; what the WORKSPACE brings is on.
+  for (const row of res.body.mcp ?? []) {
+    const owned = row.source === "workspace";
+    check(row.enabled === owned, "MCP row " + row.name + " must start " + (owned ? "ON (workspace-owned)" : "OFF"));
+  }
+  for (const row of res.body.skills ?? []) {
+    const owned = row.name === "workspace-skill";
+    check(row.enabled === owned, "skill " + row.name + " must start " + (owned ? "ON (workspace-owned)" : "OFF"));
+  }
   const names = (res.body.skills ?? []).map((s) => s.name);
-  check(names.length === 3, "the union of standing + conversation scopes must be listed, got " + JSON.stringify(names));
+  check(names.length === 4, "the union of standing + conversation + workspace scopes must be listed, got " + JSON.stringify(names));
   check(new Set(names).size === names.length, "the union must not duplicate a name");
   check(catalogText(decisionAtStart) === "", "a fresh conversation must get no MCP catalog at all");
   check(agent.shadows.length === 3, "every switched-off skill needs a shadow, got " + agent.shadows.length);
+  check(!agent.shadows.some((s) => s.name === "workspace-skill"), "a workspace-owned skill that starts on must NOT get a shadow");
   check(agent.shadows.every((s) => s.invocation?.modelInvocable === false), "shadows must be model-invisible");
 }
 
@@ -262,7 +275,9 @@ const agent = makeAgent("sess-1");
   console.log("bulk mcp on ->", bulk.status, JSON.stringify({ mcp: bulk.body.mcp?.map((m) => m.name + ":" + m.enabled), skills: bulk.body.skills?.map((s) => s.name + ":" + s.enabled) }));
   check(bulk.status === 200, "bulk must answer 200");
   check((bulk.body.mcp ?? []).every((m) => m.enabled === true), "bulk mcp on must enable every MCP server");
-  check((bulk.body.skills ?? []).every((s) => s.enabled === false), "bulk mcp on must NOT enable any skill");
+  check((bulk.body.skills ?? []).filter((s) => s.enabled).map((s) => s.name).join(",") === "workspace-skill",
+    "bulk mcp on must not change any skill (only the workspace-owned one was already on), got "
+      + JSON.stringify((bulk.body.skills ?? []).filter((s) => s.enabled).map((s) => s.name)));
 
   const bulkOff = await caps("POST", { session: "sess-1", kind: "mcp", bulk: true, enabled: false });
   check((bulkOff.body.mcp ?? []).every((m) => m.enabled === false), "bulk mcp off must disable every MCP server");
@@ -271,9 +286,9 @@ const agent = makeAgent("sess-1");
 
   const bulkSkills = await caps("POST", { session: "sess-1", kind: "skills", bulk: true, enabled: true });
   check((bulkSkills.body.skills ?? []).every((s) => s.enabled === true), "bulk skills on must enable every skill");
-  check((bulkSkills.body.skills ?? []).length === 3, "bulk skills must cover the whole union, got " + (bulkSkills.body.skills ?? []).length);
+  check((bulkSkills.body.skills ?? []).length === 4, "bulk skills must cover the whole union, got " + (bulkSkills.body.skills ?? []).length);
   const after = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
-  check((after["sess-1"]?.skills ?? []).length === 3, "every enabled skill must be persisted, got " + JSON.stringify(after["sess-1"]?.skills));
+  check((after["sess-1"]?.skills ?? []).length === 4, "every enabled skill must be persisted, got " + JSON.stringify(after["sess-1"]?.skills));
   const cleared = await caps("POST", { session: "sess-1", kind: "skills", bulk: true, enabled: false });
   check((cleared.body.skills ?? []).every((s) => s.enabled === false), "bulk skills off must disable every skill");
   const empty = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
@@ -316,7 +331,7 @@ const agent = makeAgent("sess-1");
   const res = await caps("GET", { session: "sess-1" });
   console.log("dead ctx.skills ->", res.status, "skills:", (res.body.skills ?? []).length);
   check(res.status === 200, "an inactive ctx.skills must not break the view");
-  check((res.body.skills ?? []).length === 3, "the fallback lookup must still list the skills, got " + (res.body.skills ?? []).length);
+  check((res.body.skills ?? []).length === 4, "the fallback lookup must still list the skills, got " + (res.body.skills ?? []).length);
   deadSkills = false;
 }
 
@@ -343,6 +358,11 @@ const agent = makeAgent("sess-1");
   const freshCaps = await caps("GET", { session: "sess-fresh" });
   console.log("seeded ->", JSON.stringify(freshCaps.body.mcp?.map((m) => m.name + ":" + m.enabled)));
   check(freshCaps.body.mcp?.find((m) => m.name === "alpha")?.enabled === true, "a new conversation must inherit the workspace default");
+  // the saved preset lists alpha only, so the workspace's own server is NOT on top of it
+  check(freshCaps.body.mcp?.find((m) => m.name === "ws-server")?.enabled === false, "a saved default must win over the workspace-owned set");
+  const wsRow = freshCaps.body.mcp?.find((m) => m.name === "ws-server");
+  check(wsRow !== undefined && wsRow.source === "workspace", "the workspace-declared server must be listed as a workspace row");
+  check(freshCaps.body.workspace !== "", "the view must report the workspace it belongs to");
 
   // a conversation in another workspace does not
   const elsewhere = makeAgent("sess-elsewhere");
@@ -356,6 +376,36 @@ const agent = makeAgent("sess-1");
   await preStep(agent);
   const kept = await caps("GET", { session: "sess-1" });
   check(kept.body.mcp?.find((m) => m.name === "alpha")?.enabled === false, "an existing conversation must not be re-seeded");
+
+  // clearing the default: the next new conversation starts with what the workspace owns
+  const cleared1 = makeRes();
+  await routeByPath("/skill-mcp-manager/workspace-defaults").handler(
+    makeReq("POST", "/skill-mcp-manager/workspace-defaults", { workspace: currentWorkspace, action: "clear" }),
+    cleared1,
+  );
+  const ownedSession = makeAgent("sess-owned");
+  ownedSession.session.cwd = currentWorkspace;
+  await preStep(ownedSession);
+  const ownedCaps = await caps("GET", { session: "sess-owned" });
+  console.log("workspace-owned ->", JSON.stringify({
+    mcp: ownedCaps.body.mcp?.map((m) => m.name + ":" + m.enabled),
+    skills: ownedCaps.body.skills?.map((x) => x.name + ":" + x.enabled),
+  }));
+  check(ownedCaps.body.mcp?.find((m) => m.name === "ws-server")?.enabled === true, "a workspace-declared server must start ON");
+  check(ownedCaps.body.skills?.find((x) => x.name === "workspace-skill")?.enabled === true, "a skill living in the workspace must start ON");
+  check(ownedCaps.body.skills?.find((x) => x.name === "skill-one")?.enabled === false, "a skill outside the workspace must stay OFF");
+  check(ownedCaps.body.mcp?.find((m) => m.name === "alpha")?.enabled === false, "a global registry server must stay OFF");
+  // mcp_load must RESOLVE a workspace-declared server (it fails to connect here, which
+  // is fine — the point is that it is not "not registered").
+  const load = toolByName.get("mcp_load");
+  let wsLoadError = "";
+  try {
+    await load.execute({ name: "ws-server" }, { agent: ownedSession, signal: { throwIfAborted() {} } });
+  } catch (err) {
+    wsLoadError = String(err?.message ?? err);
+  }
+  console.log("mcp_load workspace server ->", wsLoadError.slice(0, 90));
+  check(!/not registered/.test(wsLoadError), "mcp_load must resolve a workspace-declared server, got: " + wsLoadError);
 
   // clearing removes the default
   const cleared = makeRes();
@@ -371,6 +421,30 @@ const agent = makeAgent("sess-1");
     bad,
   );
   check(bad.status === 400, "an unknown action must be refused");
+}
+
+// 7c) a pin scopes a registry entry to one workspace
+{
+  const pinned = makeRes();
+  await routeByPath("/skill-mcp-manager/mcp/workspace").handler(
+    makeReq("POST", "/skill-mcp-manager/mcp/workspace", { name: "alpha", workspace: join(tmp, "workspace-b") }),
+    pinned,
+  );
+  check(pinned.status === 200, "pinning must answer 200, got " + pinned.status + " " + JSON.stringify(bodyOf(pinned)));
+  const here = await caps("GET", { session: "sess-1" });
+  check(!(here.body.mcp ?? []).some((m) => m.name === "alpha"), "a server pinned elsewhere must not be listed here");
+  const there = makeAgent("sess-pinned");
+  there.session.cwd = join(tmp, "workspace-b");
+  await preStep(there);
+  const thereCaps = await caps("GET", { session: "sess-pinned" });
+  check((thereCaps.body.mcp ?? []).some((m) => m.name === "alpha"), "the pinned workspace must still list it");
+  const saved = JSON.parse(await readFile(join(dataDir, "registry.json"), "utf8"));
+  check((saved.entries ?? []).some((e) => e.name === "alpha" && e.workspace !== ""), "the pin must be persisted on the entry");
+  // unpin restores it everywhere
+  const unpin = makeRes();
+  await routeByPath("/skill-mcp-manager/mcp/workspace").handler(makeReq("POST", "/skill-mcp-manager/mcp/workspace", { name: "alpha", workspace: "" }), unpin);
+  const back = await caps("GET", { session: "sess-1" });
+  check((back.body.mcp ?? []).some((m) => m.name === "alpha"), "unpinning must make it global again");
 }
 
 // 8) bad input is refused

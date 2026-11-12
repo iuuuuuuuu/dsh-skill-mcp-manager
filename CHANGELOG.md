@@ -11,6 +11,13 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 - **修：「能力管理」里技能只列出一个（agent-notes）**：那栏原来用**会话层**（`skills.list({scope: agent})`）取列表，只看得到插件自己注册的那一个；能力库列出的是**常驻 preset 层**（`filesystem` / `~/.agents/skills` / 随包技能）。现在两边取并集（常驻层 + 会话层，按名字去重），视图、单条开关、一键全关/全开都用同一份列表——所以关掉一个只存在于常驻层的技能也不会再报「skill not found」。
 - **修：技能服务偶发不可用（插件上下文失效）**：桌面端重载插件条目后 `ctx.skills` 会抛 `cannot get required service "skills" in inactive context`，而路由还在服务。`skillsService()` 现在按 `ctx.skills` → `ctx.get("skills")` → `ctx.root.skills` 依次取第一个可用的；全部不可用才报「重启 DSH」。(注：这条要重启宿主才生效。)
 - **测试**：`test/session-caps-smoke.mjs` 的假 provider 现在按层返回不同集合（`only-standing` 只在常驻层、`only-agent` 只在会话层），断言并集且不重复；两处故障注入都会红（只取会话层 = 用户遇到的现象；只取常驻层）。
+- **工作区自带的 MCP（新增约定）**：宿主没有「工作区 MCP」这个概念，所以由本插件定义 —— 项目可以自带服务器，**不进**用户注册表、**不写** profile patch：
+  - 认三个文件（同名先找到的赢）：`<工作区>/.dsh/mcp.json`、`<工作区>/.mcp.json`（Claude Code / Cursor 同款）、`<工作区>/.agents/mcp.json`。
+  - 两种形状都收：`{ "servers": [{ name, transport, command, args, env }] }` 与 `{ "mcpServers": { name: { command|url, args, env, headers } } }`；`command` 推 stdio、`url` 推 streamable-http，名字必须 `[A-Za-z0-9_-]{1,32}`，坏条目**跳过并报原因**而不是整份失效。
+  - 工作区服务器一律 **on-demand**：永不注册宿主原生工具，只走 `mcp_load`/`mcp_call`，并按会话开关（守卫认 `mcp__<name>__*`）。`mcp_load`/`mcp_call` 的名字解析顺序：注册表 → 会话工作区声明。
+- **注册表条目可以「只在这个工作区生效」**：MCP 详情抽屉里选「仅 <工作区>」，该条目在别的工作区的对话里**既不列出也不挂载**；选回「全部工作区」即解除。持久化在 `registry.json` 的 `workspace` 字段。
+- **工作区自带的东西默认开**：没有存过工作区默认时，新对话按「工作区自带的」起步 —— 工作区声明的 MCP 服务器、以及在**该工作区目录内**的技能（按路径判定，用户自己的 `~/.agents` / 随包技能不算）；其余依旧默认关。存过工作区默认则以那份为准。
+  - 测试：新增 `test/workspace-mcp-smoke.mjs`（两种形状、推断传输、坏条目报错、文件优先级、坏 JSON 不致命）；`session-caps-smoke` 增加工作区自有默认开、注册表 pin 过滤、以及 `mcp_load` 解析工作区服务器的断言。故障注入四处会红（pin 不过滤 / 工作区自带不默认开 / `mcp_load` 不解析工作区 / 种子里不写 `seeded` 标记）。
 - **工作区默认开启（「新对话默认开哪些」）**：能力管理头部多了「存为工作区默认 / 清除默认」和一个「新对话默认：N 项」的计数。点「存为工作区默认」就把**这个对话此刻开着的** MCP 与技能记成**这个工作区**的默认；以后在这个工作区新开的对话，第一轮就按这份默认起步（不是全关）。
   - 存储在 `~/.dsh/skill-mcp-manager/workspace-defaults.json`，以**工作区路径**为键（`resolve` 后小写化，与项目技能的 cwd 键一致）。
   - 只影响**新对话**：一个对话在它的第一轮被 `seeded: true` 标记，之后哪怕你把所有开关都关掉，也不会被默认值再覆盖回去（否则「我明明关了」会变成灵异事件）。这条是本功能的语义核心，测试专门盯着它。
