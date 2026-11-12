@@ -169,12 +169,14 @@ function makeRes() {
   return res;
 }
 const bodyOf = (res) => (res.body ? JSON.parse(res.body) : {});
-async function caps(method, body) {
+async function caps(method, body, explicitUrl) {
   const res = makeRes();
-  const url = method === "GET"
-    ? "/skill-mcp-manager/session-caps?session=" + encodeURIComponent(body?.session ?? "sess-1")
-    : "/skill-mcp-manager/session-caps";
-  await routeByPath("/skill-mcp-manager/session-caps").handler(makeReq(method, url, body), res);
+  const url = explicitUrl !== undefined
+    ? explicitUrl
+    : method === "GET"
+      ? "/skill-mcp-manager/session-caps?session=" + encodeURIComponent(body?.session ?? "sess-1")
+      : "/skill-mcp-manager/session-caps";
+  await routeByPath(url.split("?")[0]).handler(makeReq(method, url, body), res);
   return { status: res.status, body: bodyOf(res) };
 }
 async function preStep(agent) {
@@ -458,6 +460,29 @@ const agent = makeAgent("sess-1");
   await routeByPath("/skill-mcp-manager/mcp/workspace").handler(makeReq("POST", "/skill-mcp-manager/mcp/workspace", { name: "alpha", workspace: "" }), unpin);
   const back = await caps("GET", { session: "sess-1" });
   check((back.body.mcp ?? []).some((m) => m.name === "alpha"), "unpinning must make it global again");
+}
+
+// 7d) 详情: tools for MCP, body for a skill
+{
+  const mcp = await caps("GET", {}, "/skill-mcp-manager/capability-detail?session=sess-1&kind=mcp&name=alpha");
+  console.log("mcp detail:", JSON.stringify(mcp.body).slice(0, 160));
+  check(mcp.status === 200, "the MCP detail must answer 200, got " + mcp.status + " " + JSON.stringify(mcp.body).slice(0, 120));
+  check(Array.isArray(mcp.body.tools) && mcp.body.tools.length === 1, "the fixture server's one tool must be listed, got " + JSON.stringify(mcp.body.tools));
+  check(mcp.body.tools[0].name === "ping", "the tool name must survive");
+  check(mcp.body.loaded === true, "a server with a snapshot must read as loaded");
+  check(mcp.body.transport === "streamable-http", "the transport must be reported");
+
+  const skill = await caps("GET", {}, "/skill-mcp-manager/capability-detail?session=sess-1&kind=skills&name=skill-one");
+  console.log("skill detail:", JSON.stringify({ name: skill.body.name, path: skill.body.path, content: String(skill.body.content).slice(0, 20) }));
+  check(skill.status === 200, "the skill detail must answer 200, got " + skill.status);
+  check(skill.body.content === "# one", "the skill body must come back, got " + JSON.stringify(skill.body.content));
+  check(skill.body.path !== "", "the skill path must come back");
+  check(skill.body.readonly === false, "a user skill is not read-only");
+
+  const missing = await caps("GET", {}, "/skill-mcp-manager/capability-detail?session=sess-1&kind=skills&name=nope");
+  check(missing.status === 400, "an unknown skill must be refused, got " + missing.status);
+  const badKind = await caps("GET", {}, "/skill-mcp-manager/capability-detail?session=sess-1&kind=nope&name=alpha");
+  check(badKind.status === 400, "an unknown kind must be refused");
 }
 
 // 8) bad input is refused

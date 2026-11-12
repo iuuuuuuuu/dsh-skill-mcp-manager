@@ -1537,6 +1537,9 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // Plugin groups are long and mostly off: they render as one-line rows, and the
     // What a NEW conversation in this workspace starts with (saved from here).
     const [preset, setPreset] = useState(null);
+    // 详情: what the row actually exposes (an MCP server's tools, a skill's body).
+    const [detail, setDetail] = useState(null);
+    const [detailBusy, setDetailBusy] = useState(false);
 
     const load = useCallback(async () => {
       if (sessionId === "") return;
@@ -1559,6 +1562,20 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         .then((data) => setPreset(data))
         .catch(() => setPreset(null));
     }, [state]);
+
+    async function openDetail(kind, name) {
+      setDetailBusy(true);
+      try {
+        const data = await getJson("/skill-mcp-manager/capability-detail?session=" + encodeURIComponent(sessionId)
+          + "&kind=" + encodeURIComponent(kind) + "&name=" + encodeURIComponent(name));
+        setDetail(data);
+        setError("");
+      } catch (err) {
+        setError(errText(err));
+      } finally {
+        setDetailBusy(false);
+      }
+    }
 
     async function savePreset(action) {
       const workspace = state && typeof state.workspace === "string" ? state.workspace : "";
@@ -1649,7 +1666,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
             h(Switch, { checked: item.enabled, disabled: running, onChange: (next) => flip(kind, item.name, next) }),
             h("span", { className: "smx-switchline__label" }, item.enabled ? "可用" : "已关闭"),
           ),
-          item.enabled ? h("span", { className: "smx-cap__hint" }, "本对话可用") : null,
+          h("button", { type: "button", className: "smx-btn smx-btn--ghost", disabled: detailBusy, onClick: () => openDetail(kind, item.name) }, "详情"),
         ),
       );
     }
@@ -1745,6 +1762,40 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const skills = (state && state.skills) || [];
     const onCount = mcp.filter((item) => item.enabled).length + skills.filter((item) => item.enabled).length;
 
+    // 详情 body: an MCP server's tools, or a skill's markdown body. Read-only text —
+    // no editing surface here, the library owns that.
+    function mcpDetail(info) {
+      return h("div", { className: "smx-detail" },
+        h("div", { className: "smx-detail__meta" },
+          [info.transport, info.tier, info.source === "workspace" ? "工作区声明" : info.source === "plugin" ? "插件注入" : "注册表"]
+            .filter(Boolean).join(" · "),
+        ),
+        info.serverDescription ? h("p", { className: "smx-detail__text" }, info.serverDescription) : null,
+        info.notes ? h("p", { className: "smx-detail__text" }, "备注：" + info.notes) : null,
+        info.tools.length === 0
+          ? h("p", { className: "smx-detail__text" },
+              info.loaded === false
+                ? "还没有工具快照：可以在能力库点「刷新快照」，或先在本对话打开它一次。"
+                : "这台服务器没有暴露工具。")
+          : h("ul", { className: "smx-tools" }, info.tools.map((tool) => h("li", { key: tool.name, className: "smx-tool" },
+              h("span", { className: "smx-tool__name" }, tool.name),
+              h("span", { className: "smx-tool__desc" }, tool.description || "没有描述"),
+            ))),
+        info.tools.length > 0 ? h("div", { className: "smx-detail__meta" }, "共 " + info.tools.length + " 个工具") : null,
+      );
+    }
+
+    function skillDetail(info) {
+      return h("div", { className: "smx-detail" },
+        h("div", { className: "smx-detail__meta" }, [info.provider ? "来源 " + info.provider : "", info.readonly ? "随包只读" : ""].filter(Boolean).join(" · ")),
+        info.path ? h("div", { className: "smx-detail__meta" }, info.path) : null,
+        info.description ? h("p", { className: "smx-detail__text" }, info.description) : null,
+        info.content === ""
+          ? h("p", { className: "smx-detail__text" }, "这个技能没有正文。")
+          : h("pre", { className: "smx-pre" }, info.content),
+      );
+    }
+
     return h("div", { className: "smx-view" },
       h("div", { className: "smx-head" },
         h("div", null,
@@ -1802,7 +1853,18 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               },
               (item) => (item.provider ? "来源 " + item.provider : "来源未知"),
               (item) => (item.readonly ? "只读" : null)),
+          detail === null ? null : h("div", { className: "smx-drawer", role: "dialog", "aria-label": detail.name + " 详情" },
+        h("div", { className: "smx-drawer__scrim", onClick: () => setDetail(null) }),
+        h("div", { className: "smx-drawer__panel" },
+          h("div", { className: "smx-drawer__head" },
+            h("span", { className: "smx-drawer__title" }, detail.name),
+            h(Badge, { tone: "muted" }, detail.kind === "mcp" ? "MCP" : "技能"),
+            h("button", { type: "button", className: "smx-btn", onClick: () => setDetail(null) }, "关闭"),
           ),
+          detail.kind === "mcp" ? mcpDetail(detail) : skillDetail(detail),
+        ),
+      ),
+      ),
     );
   }
 
@@ -1967,6 +2029,14 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-detail__section { display:flex; flex-direction:column; gap:4px; }",
     ".smx-detail__label { font-size:11px; font-weight:600; color:var(--dsw-alias-label-secondary); }",
     ".smx-detail__actions { display:flex; gap:8px; flex-wrap:wrap; }",
+    // 详情 body (the conversation view): meta lines, prose, a tool list, and the raw
+    // markdown of a skill.
+    ".smx-detail__meta { font-size:11px; color:var(--dsw-alias-label-secondary); word-break:break-all; }",
+    ".smx-detail__text { margin:0; font-size:12px; line-height:1.5; color:var(--dsw-alias-label-primary); }",
+    ".smx-detail .smx-tool { flex-direction:column; align-items:flex-start; gap:1px; padding:4px 0; border-bottom:1px solid var(--dsw-alias-border-l1); }",
+    ".smx-detail .smx-tool:last-child { border-bottom:0; }",
+    ".smx-detail .smx-tool__name { font-size:12px; font-weight:600; }",
+    ".smx-pre { margin:0; padding:10px; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-bg-layer-2); font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:11px; line-height:1.55; white-space:pre-wrap; word-break:break-word; max-height:60vh; overflow:auto; }",
     ".smx-kv { display:flex; gap:8px; font-size:12px; }",
     ".smx-kv__k { flex-shrink:0; color:var(--dsw-alias-label-secondary); }",
     ".smx-kv__v { color:var(--dsw-alias-label-primary); word-break:break-all; }",
