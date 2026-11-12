@@ -276,7 +276,7 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
   })(tree);
   const flat = texts.join(" | ");
   console.log("plugin rows (collapsed):", texts.filter((t) => /^(box-|sequential)/.test(t)).join(","));
-  check(flat.includes("展开 "), "a plugin group with more than one row must offer 展开, got: " + flat.slice(0, 200));
+  check(flat.includes("展开 "), "every plugin group must offer 展开, got: " + flat.slice(0, 200));
   check(!flat.includes("smx-modal"), "there is no modal any more — the box grows in place");
   const boxClass = [];
   (function walk(node) {
@@ -285,13 +285,20 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
     if (typeof cls === "string" && cls.includes("smx-pluginbox")) boxClass.push(cls);
     for (const child of node.children ?? []) walk(child);
   })(tree);
-  check(boxClass.length === 1, "the plugin group must render exactly one box, got " + boxClass.length);
-  check(!boxClass[0].includes("is-open"), "the box must start collapsed (one row visible)");
-  check(texts.filter((t) => /^(box-|sequential)/.test(t)).length === 1, "collapsed shows one row");
-  check(texts.includes("box-a"), "the first row is the first switched-on one");
-  const rowsOnPage = texts.filter((t) => /^(box-|sequential)/.test(t)).length;
-  check(rowsOnPage === 1, "a collapsed box shows exactly one row, got " + rowsOnPage);
-  check(flat.includes("展开 6 个"), "the header must say how many rows the box holds");
+  // Collapsed: exactly ONE one-line CARD (a card, not a bare row, not header-only).
+  check(boxClass.length === 0, "a collapsed plugin group has no expanded box, got " + boxClass.length);
+  check(texts.filter((t) => /^(box-|sequential)/.test(t)).length === 1, "collapsed shows one card line, got " + texts.filter((t) => /^(box-|sequential)/.test(t)).length);
+  check(texts.includes("box-a"), "the visible card is the first switched-on one");
+  const lineCards = [];
+  (function walk(node) {
+    if (node === null || node === undefined || typeof node !== "object") return;
+    const cls = node.props?.className;
+    if (typeof cls === "string" && cls.includes("smx-card--line") && !cls.includes("__")) lineCards.push(cls);
+    for (const child of node.children ?? []) walk(child);
+  })(tree);
+  check(lineCards.length === 1, "the visible item must be a card, got " + lineCards.length);
+  check(lineCards[0].includes("smx-card"), "the one-line item keeps the card frame");
+  check(flat.includes("展开 6 个"), "the header must say how many rows it opens");
   for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
 }
 
@@ -317,6 +324,22 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
   const names = texts.filter((t) => /^(box-|sequential)/.test(t));
   console.log("plugin rows (expanded):", names.join(","));
   check(names.length === 6, "展开 must show every row, got " + names.length);
+  const openBoxes = [];
+  (function walk(node) {
+    if (node === null || node === undefined || typeof node !== "object") return;
+    const cls = node.props?.className;
+    if (typeof cls === "string" && cls.includes("smx-pluginbox")) openBoxes.push(cls);
+    for (const child of node.children ?? []) walk(child);
+  })(tree);
+  check(openBoxes.length === 1 && openBoxes[0].includes("is-open"), "the expanded list must live in one fixed-height box, got " + JSON.stringify(openBoxes));
+  const expandedCards = [];
+  (function walk(node) {
+    if (node === null || node === undefined || typeof node !== "object") return;
+    const cls = node.props?.className;
+    if (typeof cls === "string" && cls.includes("smx-card--line") && !cls.includes("__")) expandedCards.push(cls);
+    for (const child of node.children ?? []) walk(child);
+  })(tree);
+  check(expandedCards.length === 6, "every expanded row must still be a card, got " + expandedCards.length);
   check(names.indexOf("box-a") < names.indexOf("box-c") && names.indexOf("box-c") < names.indexOf("box-b"),
     "switched-on rows come first, then the off ones: " + names.join(","));
   check(texts.includes("收起"), "the header must offer 收起 once expanded");

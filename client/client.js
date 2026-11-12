@@ -1631,16 +1631,17 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
 
-    // One line per plugin-provided item, shown INSIDE the group's fixed-height box:
-    // the box is the card, the rows are what you scroll through in it.
-    function plugRow(kind, item, meta, badge) {
+    // The card, limited to one line of content: frame + name + meta + switch. A plugin
+    // usually brings a few things the user mostly leaves off, so they keep the card
+    // look (not a bare list row) and cost one line of height each.
+    function plugCard(kind, item, meta, badge) {
       const busyKey = kind + ":" + item.name;
-      return h("div", { key: busyKey, className: cx("smx-plugrow", !item.enabled && "is-off") },
-        h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle") }),
-        h("span", { className: "smx-plugrow__name", title: item.name }, item.name),
+      return h("article", { key: busyKey, className: cx("smx-card", "smx-card--line", !item.enabled && "is-dimmed") },
+        h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle"), title: item.enabled ? "可用" : "本对话已关闭" }),
+        h("span", { className: "smx-card__name", title: item.name }, item.name),
         badge ? h(Badge, { tone: "muted" }, badge) : null,
-        h("span", { className: "smx-plugrow__meta", title: meta }, meta),
-        h("span", { className: "smx-plugrow__switch" },
+        h("span", { className: "smx-card--line__meta", title: meta }, meta),
+        h("span", { className: "smx-card--line__switch" },
           h(Switch, {
             checked: item.enabled,
             disabled: busy === busyKey || busy === "many:" + kind,
@@ -1649,7 +1650,6 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         ),
       );
     }
-
     function tile(kind, item, meta, badge) {
       const key = kind + ":" + item.name;
       const running = busy === key || busy === "many:" + kind;
@@ -1760,14 +1760,17 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                 ),
                 unfolded
                   ? (bucket.key.startsWith("plugin:")
-                      // A plugin group is a fixed-height box: one row visible, 展开 grows
-                      // that same box and the rest scrolls inside it, so the page never
-                      // changes height as plugins come and go.
-                      // Exactly one row while collapsed: the row height depends on the
-                      // theme's font metrics, so hiding by height leaked a second row.
-                      ? h("div", { className: cx("smx-pluginbox", openBox[bucket.key] && "is-open") },
-                          (openBox[bucket.key] ? ordered : ordered.slice(0, 1)).map((item) => plugRow(kind, item, metaOf(item), badgeOf(item))),
-                        )
+                      // A plugin group is ONE CARD LINE until 展开: the card keeps its
+                      // frame (it is still a card), it just carries one line of content.
+                      // 展开 puts every card into a fixed-height box that scrolls inside,
+                      // so the page never grows with the number of plugin items.
+                      ? (openBox[bucket.key]
+                          ? h("div", { className: "smx-pluginbox is-open" },
+                              ordered.map((item) => plugCard(kind, item, metaOf(item), badgeOf(item))),
+                            )
+                          : h("div", { className: "smx-cap-grid" },
+                              ordered.slice(0, 1).map((item) => plugCard(kind, item, metaOf(item), badgeOf(item))),
+                            ))
                       : h("div", { className: "smx-cap-grid" }, shown.map((item) => tile(kind, item, metaOf(item), badgeOf(item)))))
                   : null,
               );
@@ -1900,16 +1903,14 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-capgroup__title { font-size:12px; font-weight:600; color:var(--dsw-alias-label-secondary); }",
     ".smx-capgroup__count { font-size:11px; color:var(--dsw-alias-label-secondary); }",
     ".smx-capgroup__actions { display:flex; align-items:center; gap:4px; }",
-    // A plugin group is a fixed-height card box: one row visible when collapsed,
-    // 展开 grows the box and the rest scrolls inside it.
-    ".smx-pluginbox { display:flex; flex-direction:column; gap:2px; padding:4px; height:42px; overflow:hidden; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); }",
-    ".smx-pluginbox.is-open { height:min(46vh, 340px); overflow:auto; }",
-    ".smx-plugrow { display:flex; align-items:center; gap:8px; min-width:0; padding:4px 6px; border-radius:8px; flex:none; }",
-    ".smx-plugrow:hover { background:var(--dsw-alias-bg-layer-2); }",
-    ".smx-plugrow.is-off .smx-plugrow__name { color:var(--dsw-alias-label-secondary); }",
-    ".smx-plugrow__name { flex:none; max-width:38%; font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
-    ".smx-plugrow__meta { flex:1; min-width:0; font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
-    ".smx-plugrow__switch { flex:none; display:flex; align-items:center; }",
+    // A plugin card keeps its frame but carries one line of content; 展开 puts every
+    // card into one fixed-height scrolling box, so the page never grows with the
+    // number of items a plugin brings.
+    ".smx-card.smx-card--line { flex-direction:row; align-items:center; gap:8px; padding:6px 10px; }",
+    ".smx-card.smx-card--line .smx-card__name { flex:none; max-width:38%; }",
+    ".smx-card--line__meta { flex:1; min-width:0; font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-card--line__switch { flex:none; display:flex; align-items:center; }",
+    ".smx-pluginbox { display:flex; flex-direction:column; gap:6px; padding:6px; height:min(46vh, 320px); overflow:auto; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-2); }",
     // The group header is a fold toggle (the chevron is the library page's).
     ".smx-capgroup__toggle { display:flex; align-items:center; gap:5px; padding:0; border:0; background:none; cursor:pointer; color:inherit; font:inherit; }",
     ".smx-page__body { display:flex; flex-direction:column; flex:1; min-height:0; overflow:auto; padding-bottom:28px; padding-left:max(max(16px,min(4vw,48px)),50% - 480px); padding-right:max(max(16px,min(4vw,48px)),50% - 480px); }",
