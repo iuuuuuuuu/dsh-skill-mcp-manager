@@ -236,6 +236,12 @@ for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
     check(findText(tree, "插件 · @acme/box").length > 0, "a plugin group must be rendered");
     check(findText(tree, "全部开启").length >= 2, "both kinds need their own bulk switch, got " + findText(tree, "全部开启").length);
     check(findText(tree, "reqable").length > 0, "a registry tile must be rendered");
+    // Plugin groups start folded (same rule as the library page): the header is there,
+    // the cards are not — until the header is clicked.
+    check(findText(tree, "插件 \u00b7 @acme/box").length > 0, "a plugin group header must still be rendered");
+    check(findText(tree, "sequential").length === 0, "a folded plugin group must not render its cards");
+    check(findText(tree, "系统").length > 0, "the 系统 group header must be rendered");
+    check(findText(tree, "web-search").length > 0, "an open group must render its cards");
     check(findText(tree, "存为工作区默认").length > 0, "the workspace default must be saveable from the view");
     check(findText(tree, "清除默认").length > 0, "the workspace default must be clearable from the view");
     check(findText(tree, "新对话默认：").length > 0, "the view must show the workspace default state");

@@ -1530,6 +1530,9 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
     const [busy, setBusy] = useState("");
+    // Plugin groups start folded, like the library page: the groups the user came
+    // for (my servers, the workspace, 系统) are open, a plugin's own rows are not.
+    const [openGroups, setOpenGroups] = useState({});
     // What a NEW conversation in this workspace starts with (saved from here).
     const [preset, setPreset] = useState(null);
 
@@ -1684,9 +1687,21 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
           ? h(Empty, null, kind === "mcp" ? "能力库里没有可用的 MCP 服务器" : "当前作用域没有技能")
           : h("div", { className: "smx-capgroups" }, groups.map((bucket) => {
               const bucketOn = bucket.items.filter((item) => item.enabled).length;
+              // Empty stays open so the "no servers yet" hint is visible.
+              const unfolded = openGroups[bucket.key] !== undefined
+                ? openGroups[bucket.key]
+                : (!bucket.key.startsWith("plugin:") || bucket.items.length === 0);
               return h("div", { key: bucket.key, className: "smx-capgroup" },
                 h("div", { className: "smx-capgroup__head" },
-                  h("span", { className: "smx-capgroup__title" }, bucket.title),
+                  h("button", {
+                    type: "button",
+                    className: "smx-capgroup__toggle",
+                    "aria-expanded": unfolded ? "true" : "false",
+                    onClick: () => setOpenGroups((current) => ({ ...current, [bucket.key]: !unfolded })),
+                  },
+                    h("span", { className: cx("smx-group__chevron", unfolded && "is-open") }, "\u25b8"),
+                    h("span", { className: "smx-capgroup__title" }, bucket.title),
+                  ),
                   h("span", { className: "smx-capgroup__count" }, bucketOn + " / " + bucket.items.length),
                   h("span", { className: "smx-capgroup__actions" },
                     h("button", {
@@ -1703,7 +1718,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                     }, "全关"),
                   ),
                 ),
-                h("div", { className: "smx-cap-grid" }, bucket.items.map((item) => tile(kind, item, metaOf(item), badgeOf(item)))),
+                unfolded ? h("div", { className: "smx-cap-grid" }, bucket.items.map((item) => tile(kind, item, metaOf(item), badgeOf(item)))) : null,
               );
             })),
       );
@@ -1834,6 +1849,8 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-capgroup__title { font-size:12px; font-weight:600; color:var(--dsw-alias-label-secondary); }",
     ".smx-capgroup__count { font-size:11px; color:var(--dsw-alias-label-secondary); }",
     ".smx-capgroup__actions { display:flex; align-items:center; gap:4px; }",
+    // The group header is a fold toggle (the chevron is the library page's).
+    ".smx-capgroup__toggle { display:flex; align-items:center; gap:5px; padding:0; border:0; background:none; cursor:pointer; color:inherit; font:inherit; }",
     ".smx-page__body { display:flex; flex-direction:column; flex:1; min-height:0; overflow:auto; padding-bottom:28px; padding-left:max(max(16px,min(4vw,48px)),50% - 480px); padding-right:max(max(16px,min(4vw,48px)),50% - 480px); }",
     ".smx-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }",
     ".smx-title { margin:0; font-size:15px; font-weight:600; color:var(--dsw-alias-label-primary); }",
