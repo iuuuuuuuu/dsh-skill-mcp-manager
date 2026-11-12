@@ -62,6 +62,11 @@ globalThis.fetch = async (url) => {
       mcp: [
         { name: "reqable", source: "registry", owner: "", tier: "on-demand", transport: "stdio", toolCount: 46, enabled: true },
         { name: "sequential", source: "plugin", owner: "@acme/box", tier: "plugin", transport: "stdio", toolCount: 1, enabled: false },
+        { name: "box-a", source: "plugin", owner: "@acme/box", tier: "plugin", transport: "stdio", toolCount: 0, enabled: true },
+        { name: "box-b", source: "plugin", owner: "@acme/box", tier: "plugin", transport: "stdio", toolCount: 0, enabled: false },
+        { name: "box-c", source: "plugin", owner: "@acme/box", tier: "plugin", transport: "stdio", toolCount: 0, enabled: true },
+        { name: "box-d", source: "plugin", owner: "@acme/box", tier: "plugin", transport: "stdio", toolCount: 0, enabled: false },
+        { name: "box-e", source: "plugin", owner: "@acme/box", tier: "plugin", transport: "stdio", toolCount: 0, enabled: false },
       ],
       skills: [
         { name: "web-search", description: "", provider: "filesystem", readonly: false, enabled: true },
@@ -216,8 +221,6 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
     check(findText(tree, "插件 · @acme/agent-notes").length > 0, "the skills tab must render the plugin group");
   }
 }
-for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
-
 // 2) the conversation view builds, then builds again with the fetched data —
 //    the second pass is what exercises the loaded branch (groups, tiles, buttons).
 {
@@ -236,16 +239,53 @@ for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
     check(findText(tree, "插件 · @acme/box").length > 0, "a plugin group must be rendered");
     check(findText(tree, "全部开启").length >= 2, "both kinds need their own bulk switch, got " + findText(tree, "全部开启").length);
     check(findText(tree, "reqable").length > 0, "a registry tile must be rendered");
+    console.log("view checks (folded defaults) done");
     // Plugin groups start folded (same rule as the library page): the header is there,
     // the cards are not — until the header is clicked.
     check(findText(tree, "插件 \u00b7 @acme/box").length > 0, "a plugin group header must still be rendered");
     check(findText(tree, "sequential").length === 0, "a folded plugin group must not render its cards");
+    // Plugin groups render one-line rows with an overflow modal, and enabled rows first.
+    check(findText(tree, "展开更多").length === 0, "a folded group must not offer the overflow button either");
     check(findText(tree, "系统").length > 0, "the 系统 group header must be rendered");
     check(findText(tree, "web-search").length > 0, "an open group must render its cards");
     check(findText(tree, "存为工作区默认").length > 0, "the workspace default must be saveable from the view");
     check(findText(tree, "清除默认").length > 0, "the workspace default must be clearable from the view");
     check(findText(tree, "新对话默认：").length > 0, "the view must show the workspace default state");
   }
+}
+
+// 3) an UNFOLDED plugin group renders one-line rows, enabled first, with the
+//    overflow button instead of tiling every row onto the page.
+{
+  for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
+  // openGroups is hook #4 (state, error, notice, busy, openGroups, more, preset).
+  stateOverrides["CapabilityView:4"] = { "plugin:@acme/box": true };
+  instances.clear();
+  hookSlots = [];
+  const props = view.options.inject ? view.options.inject("sess-1") : {};
+  renderComponent("CapabilityView(loading)", view.component, props);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  const tree = renderComponent("CapabilityView(rows)", view.component, props, true);
+  const texts = [];
+  (function walk(node) {
+    if (node === null || node === undefined || typeof node !== "object") return;
+    for (const child of node.children ?? []) {
+      if (typeof child === "string") texts.push(child);
+      else walk(child);
+    }
+  })(tree);
+  const flat = texts.join(" | ");
+  console.log("plugin rows:", texts.filter((t) => /^(box-|sequential)/.test(t)).join(","));
+  check(flat.includes("展开更多"), "an overflowing plugin group must offer 展开更多, got: " + flat.slice(0, 200));
+  const boxA = texts.indexOf("box-a");
+  const boxC = texts.indexOf("box-c");
+  const boxB = texts.indexOf("box-b");
+  check(boxA !== -1 && boxB !== -1 && boxA < boxB, "switched-on rows must come first (box-a before box-b)");
+  check(boxC !== -1 && boxC < boxB, "every switched-on row must precede the off ones");
+  check(!texts.includes("sequential"), "a row beyond the limit must not be on the page (it lives in the modal)");
+  const rowsOnPage = texts.filter((t) => /^(box-|sequential)/.test(t)).length;
+  check(rowsOnPage === 5, "only the row limit stays on the page, got " + rowsOnPage);
+  for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
 }
 
 if (failed.length > 0) {

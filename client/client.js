@@ -1524,6 +1524,9 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
   // A tab in the conversation's view switcher (next to 轨迹). It edits the policy
   // of THIS conversation only: turning a server or a skill off drops it from this
   // chat's tool surface and catalog without touching 能力库's global settings.
+  // How many plugin rows stay on the page before "展开更多" takes over.
+  const PLUGIN_ROW_LIMIT = 5;
+
   function CapabilityView(props) {
     const sessionId = typeof props.sessionId === "string" ? props.sessionId : "";
     const [state, setState] = useState(null);
@@ -1533,6 +1536,9 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // Plugin groups start folded, like the library page: the groups the user came
     // for (my servers, the workspace, 系统) are open, a plugin's own rows are not.
     const [openGroups, setOpenGroups] = useState({});
+    // Plugin groups are long and mostly off: they render as one-line rows, and the
+    // overflow opens in a modal instead of pushing the page taller.
+    const [more, setMore] = useState(null);
     // What a NEW conversation in this workspace starts with (saved from here).
     const [preset, setPreset] = useState(null);
 
@@ -1624,6 +1630,25 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
 
+    // One line per plugin-provided capability: dot, name, meta, switch. Everything a
+    // card would say that matters here fits on the line; the rest lives in 能力库.
+    function row(kind, item, meta, badge) {
+      const busyKey = kind + ":" + item.name;
+      return h("div", { key: busyKey, className: cx("smx-caprow", !item.enabled && "is-off") },
+        h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle") }),
+        h("span", { className: "smx-caprow__name", title: item.name }, item.name),
+        badge ? h(Badge, { tone: "muted" }, badge) : null,
+        h("span", { className: "smx-caprow__meta", title: meta }, meta),
+        h("span", { className: "smx-caprow__switch" },
+          h(Switch, {
+            checked: item.enabled,
+            disabled: busy === busyKey || busy === "many:" + kind,
+            onChange: (next) => flip(kind, item.name, next),
+          }),
+        ),
+      );
+    }
+
     function tile(kind, item, meta, badge) {
       const key = kind + ":" + item.name;
       const running = busy === key || busy === "many:" + kind;
@@ -1691,6 +1716,13 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               const unfolded = openGroups[bucket.key] !== undefined
                 ? openGroups[bucket.key]
                 : (!bucket.key.startsWith("plugin:") || bucket.items.length === 0);
+              // Plugin rows: switched-on first, so the page answers "what is on" at a
+              // glance; beyond PLUGIN_ROW_LIMIT the rest moves into the modal.
+              const ordered = bucket.key.startsWith("plugin:")
+                ? [...bucket.items].sort((a, b) => (b.enabled ? 1 : 0) - (a.enabled ? 1 : 0) || a.name.localeCompare(b.name))
+                : bucket.items;
+              const shown = bucket.key.startsWith("plugin:") ? ordered.slice(0, PLUGIN_ROW_LIMIT) : ordered;
+              const hidden = bucket.key.startsWith("plugin:") ? ordered.slice(PLUGIN_ROW_LIMIT) : [];
               return h("div", { key: bucket.key, className: "smx-capgroup" },
                 h("div", { className: "smx-capgroup__head" },
                   h("button", {
@@ -1718,7 +1750,18 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                     }, "全关"),
                   ),
                 ),
-                unfolded ? h("div", { className: "smx-cap-grid" }, bucket.items.map((item) => tile(kind, item, metaOf(item), badgeOf(item)))) : null,
+                unfolded
+                  ? h("div", { className: bucket.key.startsWith("plugin:") ? "smx-caprows" : "smx-cap-grid" },
+                      shown.map((item) => (bucket.key.startsWith("plugin:")
+                        ? row(kind, item, metaOf(item), badgeOf(item))
+                        : tile(kind, item, metaOf(item), badgeOf(item)))),
+                      hidden.length === 0 ? null : h("button", {
+                        type: "button",
+                        className: "smx-btn smx-btn--ghost smx-caprows__more",
+                        onClick: () => setMore({ kind, title: bucket.title, items: ordered, metaOf, badgeOf }),
+                      }, "展开更多 " + bucket.items.length + " 个"),
+                    )
+                  : null,
               );
             })),
       );
@@ -1788,6 +1831,18 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               (item) => (item.provider ? "来源 " + item.provider : "来源未知"),
               (item) => (item.readonly ? "只读" : null)),
           ),
+      // Overflow of a plugin group: a centered modal, so the page keeps one screen.
+      more === null ? null : h("div", { className: "smx-modal", role: "dialog", "aria-label": more.title }, 
+        h("div", { className: "smx-modal__scrim", onClick: () => setMore(null) }),
+        h("div", { className: "smx-modal__panel" },
+          h("div", { className: "smx-modal__head" },
+            h("span", { className: "smx-modal__title" }, more.title),
+            h("span", { className: "smx-count" }, more.items.filter((item) => item.enabled).length + " / " + more.items.length + " 开启"),
+            h("button", { type: "button", className: "smx-btn", onClick: () => setMore(null) }, "关闭"),
+          ),
+          h("div", { className: "smx-caprows" }, more.items.map((item) => row(more.kind, item, more.metaOf(item), more.badgeOf(item)))),
+        ),
+      ),
     );
   }
 
@@ -1849,6 +1904,21 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-capgroup__title { font-size:12px; font-weight:600; color:var(--dsw-alias-label-secondary); }",
     ".smx-capgroup__count { font-size:11px; color:var(--dsw-alias-label-secondary); }",
     ".smx-capgroup__actions { display:flex; align-items:center; gap:4px; }",
+    // One-line rows for plugin-provided capabilities, plus the overflow modal.
+    ".smx-caprows { display:flex; flex-direction:column; gap:2px; padding:4px; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); }",
+    ".smx-modal .smx-caprows { border:0; padding:0; background:none; }",
+    ".smx-caprow { display:flex; align-items:center; gap:8px; min-width:0; padding:5px 8px; border-radius:8px; }",
+    ".smx-caprow:hover { background:var(--dsw-alias-bg-layer-2); }",
+    ".smx-caprow.is-off .smx-caprow__name { color:var(--dsw-alias-label-secondary); }",
+    ".smx-caprow__name { flex:none; max-width:40%; font-size:12px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-caprow__meta { flex:1; min-width:0; font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-caprow__switch { flex:none; display:flex; align-items:center; }",
+    ".smx-caprows__more { align-self:flex-start; margin-top:4px; }",
+    ".smx-modal { position:fixed; inset:0; z-index:120; display:flex; align-items:center; justify-content:center; }",
+    ".smx-modal__scrim { position:absolute; inset:0; background:rgba(0,0,0,.35); }",
+    ".smx-modal__panel { position:relative; display:flex; flex-direction:column; gap:10px; width:min(640px, calc(100vw - 48px)); max-height:min(70vh, 620px); overflow:auto; padding:14px 16px; border:1px solid var(--dsw-alias-border-l2); border-radius:14px; background:var(--dsw-alias-bg-layer-1); box-shadow:0 18px 48px rgba(0,0,0,.28); }",
+    ".smx-modal__head { display:flex; align-items:center; gap:10px; }",
+    ".smx-modal__title { flex:1; font-size:13px; font-weight:600; }",
     // The group header is a fold toggle (the chevron is the library page's).
     ".smx-capgroup__toggle { display:flex; align-items:center; gap:5px; padding:0; border:0; background:none; cursor:pointer; color:inherit; font:inherit; }",
     ".smx-page__body { display:flex; flex-direction:column; flex:1; min-height:0; overflow:auto; padding-bottom:28px; padding-left:max(max(16px,min(4vw,48px)),50% - 480px); padding-right:max(max(16px,min(4vw,48px)),50% - 480px); }",
