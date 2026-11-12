@@ -6,6 +6,8 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
+- **插件注入的 MCP 行没有描述时，卡片写明是谁注入的**：`由 <插件名> 注入 · 服务器未自报描述`（没有归属时 `由 未归属插件 注入 · …`）。原来留空，看起来像坏掉；loader 行在连接前确实没有 `serverDescription`，所以说的只是事实，不是功能简介。
+  - 测试：`session-caps-smoke` 断言插件行带上这句话、注册表行仍用服务器自报描述。真机判读：`box` 显示「由 @simular/dsh-box 注入 · 服务器未自报描述」，`mystery` 显示「由 未归属插件 注入 · …」，0 console 异常。
 - **修：能力管理里 MCP / 技能卡片没有描述**：两个原因叠在一起 ——
   1. `tile()`（会话视图的卡片）**从来没有渲染描述那一行**，技能的描述明明在数据里也被丢掉了；MCP 行更是**根本没带** `description`。
   2. 插件注入的 MCP 行（loader 行）**没有自报描述**：它不是注册表条目，没连接前拿不到 `serverDescription`；现在读 loader 行的 `config.description`（多数 bundle 不写），没有就**留空，不编造**。

@@ -485,6 +485,17 @@ const agent = makeAgent("sess-1");
   check(badKind.status === 400, "an unknown kind must be refused");
 }
 
+// 7e) a plugin row with no self-reported description names its owner instead of
+// leaving a blank line on the card
+{
+  const state = await caps("GET", { session: "sess-1" });
+  const pluginRow = state.body.mcp.find((row) => row.source === "plugin");
+  console.log("plugin row description:", pluginRow?.description);
+  check(pluginRow !== undefined, "the fixture must expose a plugin row");
+  check(/注入 · 服务器未自报描述$/.test(pluginRow.description), "a plugin row must name its owner, got " + JSON.stringify(pluginRow.description));
+  check(state.body.mcp.find((row) => row.source === "registry").description !== "", "a registry row keeps the server's own description");
+}
+
 // 8) bad input is refused
 {
   const badKind = await caps("POST", { session: "sess-1", kind: "nope", name: "alpha", enabled: true });
