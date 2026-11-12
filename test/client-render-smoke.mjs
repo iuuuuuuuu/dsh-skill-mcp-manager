@@ -290,8 +290,7 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
   check(texts.filter((t) => /^(box-|sequential)/.test(t)).length === 1, "collapsed shows one card line, got " + texts.filter((t) => /^(box-|sequential)/.test(t)).length);
   check(texts.includes("box-a"), "the visible card is the first switched-on one");
   check(flat.includes("由插件注入的 loader 行"), "a plugin MCP card must say where the row comes from, got: " + flat.slice(0, 240));
-  check(flat.includes("已启用"), "an enabled card must show its state");
-  check(flat.includes("启用中"), "an enabled card must label its switch");
+  check(!flat.includes("已启用 · 开关即时生效"), "the one-line card must not carry a separate status line");
   const libraryCards = [];
   (function walk(node) {
     if (node === null || node === undefined || typeof node !== "object") return;

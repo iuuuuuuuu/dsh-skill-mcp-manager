@@ -1631,37 +1631,31 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
 
+    // Plugin items use 能力库's card frame, clamped to EXACTLY one line of content:
+    // dot · name · badge · source · switch. The description never wraps — a plugin
+    // that ships long prose would otherwise push the card to three lines and the
+    // page back to being a wall of text.
+    function plugCard(kind, item, meta, badge) {
+      const busyKey = kind + ":" + item.name;
+      const detail = item.description || describeCapability(kind, item);
+      return h("article", { key: busyKey, className: cx("smx-card", "smx-card--row", !item.enabled && "is-dimmed"), title: detail },
+        h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle") }),
+        h("span", { className: "smx-card__name", title: item.name }, item.name),
+        badge ? h(Badge, { tone: "muted" }, badge) : null,
+        h("span", { className: "smx-card--row__detail" }, meta ? meta + " \u00b7 " + detail : detail),
+        h("span", { className: "smx-card--row__switch" },
+          h(Switch, {
+            checked: item.enabled,
+            disabled: busy === busyKey || busy === "many:" + kind,
+            onChange: (next) => flip(kind, item.name, next),
+          }),
+        ),
+      );
+    }
     // Plugin-provided items use the SAME card as 能力库: dot · name · badge, a meta
     // line, a sentence saying where the row comes from, its state, then the switch.
     // One card per group is visible until 展开, so a plugin that brings twenty of
     // them costs the page one card.
-    function plugCard(kind, item, meta, badge) {
-      const busyKey = kind + ":" + item.name;
-      return h("article", { key: busyKey, className: cx("smx-card", !item.enabled && "is-dimmed") },
-        h("div", { className: "smx-card__head" },
-          h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle") }),
-          h("div", { className: "smx-card__ident" },
-            h("span", { className: "smx-card__name", title: item.name }, item.name),
-            h("span", { className: "smx-card__sub" }, meta),
-          ),
-          badge ? h(Badge, { tone: "muted" }, badge) : null,
-        ),
-        h("p", { className: "smx-card__desc" }, item.description || describeCapability(kind, item)),
-        h("div", { className: "smx-card__state" },
-          item.enabled ? "已启用 · 开关即时生效，无需重启" : "已关闭 · 本对话不加载，随时可以打开",
-        ),
-        h("div", { className: "smx-card__foot" },
-          h("label", { className: "smx-switchline" },
-            h(Switch, {
-              checked: item.enabled,
-              disabled: busy === busyKey || busy === "many:" + kind,
-              onChange: (next) => flip(kind, item.name, next),
-            }),
-            h("span", { className: "smx-switchline__label" }, item.enabled ? "启用中" : "已关闭"),
-          ),
-        ),
-      );
-    }
 
     // Where the row comes from, in one sentence — the plugin case is the one people
     // ask about, so it says plainly that the row is not in the library registry.
@@ -1981,6 +1975,13 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-card__name { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
     ".smx-card__sub { font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
     ".smx-card__desc { margin:0; font-size:12px; line-height:1.5; color:var(--dsw-alias-label-secondary); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }",
+    // One line of content inside the library card frame; long prose ellipsises",
+    // A plugin card: 能力库's frame, clamped to one line of content (no wrapping —
+    // a long plugin description would otherwise stretch the card to three lines).
+    ".smx-card.smx-card--row { flex-direction:row; align-items:center; gap:8px; padding:6px 10px; }",
+    ".smx-card.smx-card--row .smx-card__name { flex:none; max-width:34%; }",
+    ".smx-card--row__detail { flex:1; min-width:0; font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-card--row__switch { flex:none; display:flex; align-items:center; }",
     ".smx-card__state { font-size:11px; color:var(--dsw-alias-label-secondary); }",
     ".smx-card__desc.is-empty { font-style:italic; }",
     ".smx-card__status { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:11px; color:var(--dsw-alias-label-secondary); }",

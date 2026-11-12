@@ -6,6 +6,10 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
+- **插件组的卡片：一行内容，开启的排最前**（能力管理，定稿口径）：
+  - 卡片仍是能力库那一张（`.smx-card.smx-card--row`，边框/圆角/网格都在），但**内容固定一行**：状态点 · 名称 · 徽标 · `传输 · 来源说明`（`white-space:nowrap` + 省略号，不换行）。真机量到：描述再长，卡片高度也是 31–34px、描述行高恒 15px。
+  - **最少一行 / 最多一行**：一组至少显示一张卡片（有条目就不会空），组内每张卡片只有一行；条数多时**开→关 排序**（开启的在前、关闭的在后，同状态按名字），再多的进「展开」的固定高度盒子内部滚动。
+  - 真机验证（混合状态 fixture）：展开后 `box-on-1[on] → box-on-2[on] → box-off-1[off] → box-off-2[off]`，技能组 `agent-notes[on] → skill-off[off]`；折叠时每组只出现第一张（也就是第一个开启的）；0 console 异常。
 - **插件提供的条目统一用能力库那张卡片**（能力管理）：插件组的 MCP 与技能都渲染成能力库同款卡片 —— 状态点 · 名称 · 徽标 / 副行（`streamable-http`、`来源 agent-notes`）/ 一句来源说明 / 状态行（`已启用 · 开关即时生效，无需重启`）/ 分隔线 · 开关（`启用中` / `已关闭`）。折叠只显示**第一张卡片**，组头「展开 K 个」把全部卡片放进固定高度（`min(46vh,320px)`）盒子内部滚动。
   - 来源说明由 `describeCapability()` 生成：插件注入的 MCP 行说「由插件注入的 loader 行（mcp-box），不在能力库注册表里。」，工作区声明的说文件路径，注册表的按 eager/on-demand 说语义；技能按 `filesystem` / 插件 provider 分别说明，只读的注明随包只读。为此 `getSessionCapabilities` 的 MCP 行新增 `id` 字段（loader 行 id）。
   - 副行改为**传输/来源**（原来写「插件自带」），与能力库一致。
