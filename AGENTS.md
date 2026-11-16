@@ -88,6 +88,7 @@ docs/           程序架构（DESIGN.zh.md）、交接（HANDOFF.md）、截图
 - **能力库的插件组 = 一行卡片 + 展开更多弹窗**（2026-11-16）：技能页与 MCP 页的插件组正文只放一行卡片（`PLUGIN_ROW_VISIBLE = 3`），组头「展开更多 N 个」开 `.smx-modal` 居中弹窗给全量，弹窗里仍是同一套卡片。系统组 / 自定义分组不动。别把这套规则套到能力管理（那边是全部摊开）。
 - **粘贴配置导入 = 宿主一个解析器，且要修片段**（2026-11-16）：`lib/mcp-config.js` 的 `parseMcpConfigDocument()` 认 `servers` / `mcpServers` / 裸名字表三种外壳**加**四种片段形态 —— 单对（`"x": {…},`）、多对、`name` 写在字段里的单条目、以及带尾随逗号的任意组合。修法是候选序列：原样 → 去尾随逗号 → 包花括号 → 包起来再去逗号（**逗号必须包完再删**，`{…,}` 是另一条错）；只有全都失败才报 `不是合法 JSON`，并把 `repaired: true` 告诉客户端，客户端据此把修好的文档回填输入框。`type` 只映射 `http`→streamable-http、`stdio`（`sse` 等要**明确报不支持**）；`POST /mcp/config/parse` 只预览、`POST /mcp/config/import` 逐条走 `registerServerEntry()`（一个连不上不影响其它）。**预览与导入必须同一个解析器**，否则用户看到「可以导入」却被拒。客户端粘贴时只做本地 pretty-print，校验一律问宿主。
 - **客户端有一份解析器镜像，只为旧宿主**（2026-11-16）：桌面端可以只重载 client，宿主仍是旧版插件、没有 `/mcp/config` 路由，直接问就是 405。所以客户端内置 `localParseMcpConfig()`（外壳 / 修片段 / `http`→streamable-http / 名字与字段校验，与宿主 `lib/mcp-config.js` 同一套规则），**仅在路由 404/405/返回 HTML 时启用**，并在弹窗里明说这是旧版宿主、导入需升级重启；导入退化为逐个 `/mcp/add`。**改宿主解析规则必须同步改镜像**（镜像不是权威，权威仍是宿主；它存在只是为了不让界面在旧宿主上装作坏掉）。
+- **拖动排序用 SortableJS，库从宿主路由取**（2026-11-16）：`sortablejs` 是本包依赖，宿主 `GET /vendor/sortable` 返回它的 **ESM** 构建，客户端 `import()` 后 `create()` 到带 `data-sort-kind` 的网格上（卡片带 `data-cap-name`）；松手时**按 DOM 顺序**收集名字 `POST /order` 落 `order.json`。**不要手写拖拽**。两个坑：① `setState(类函数)` 会被 React 当 updater 调用（Sortable 立刻抛 `el must be an HTMLElement`），必须 `setState(() => 值)`；② 客户端 bundle 无打包器，不能 `require` npm，只能动态 `import()` 宿主路由（路由缺失=没有拖拽，不能影响页面）。顺序是纯展示，不进模型目录。
 - **表单用一套栅格**（2026-11-16）：弹窗里的表单统一 `.smx-form`（132px 标签列 + `minmax(0,1fr)` 控件列、控件 30px 高），别再给单个 input 写宽度——长短不一会一眼看出来。
 - **能力库的新增 MCP 走一条代码路径**（2026-11-16）：`POST /mcp/add` → `addMcp()` → `registerServerEntry(args, { exec })`，与 `mcp_register` 工具**同一个函数**（真连一次 + 拉工具清单才落盘，失败 400 不写注册表，重名即更新）。`exec === null` 表示人点的，**不弹本地命令审批**——那道门只防模型。新增入口不要再复制一份注册逻辑。
 - **所有浮层都是居中弹窗，不是抽屉**（2026-11-16 定稿）：能力库与能力管理的详情、新增 MCP、导入本地技能、残留进程清理、高级设置、展开更多，全部走同一个 `Modal`（遮罩 + 居中面板 + `关闭`），`.smx-drawer` 已被改成居中面板（壳名沿用，视觉不是抽屉）。**页面里不要再平铺可展开的区块**（高级设置、导入面板都从页面挪进弹窗）。新增浮层直接复用 `Modal`，别再写第三种壳。
@@ -133,6 +134,9 @@ node test/mcp-call-guard-smoke.mjs # mcp_call 参数形状守卫 + 工具调用�
 node test/mcp-result-smoke.mjs # MCP 工具结果投影：文本、图片准入、resource/audio、structuredContent
 node test/mcp-load-schema-smoke.mjs # mcp_load（load/peek）与 registry 快照包含 inputSchema
 node test/mcp-check-smoke.mjs  # 管理页连接检测：真 stdio fixture 的连通/失败/落盘/掩码
+node test/mcp-add-smoke.mjs    # 新增 MCP 路由：真 stdio fixture、重名更新、失败不落盘、形状守卫
+node test/mcp-config-smoke.mjs # 粘贴配置解析（外壳/片段/错误路径）+ 逐条导入
+node test/order-smoke.mjs      # 拖动排序：写入/去重/持久化 + vendor 路由服务真 SortableJS
 node test/client-slots-smoke.mjs # 客户端座位契约：设置页 + 侧边栏行/main 面板的 id/惰性注入/注册顺序/图标/卸载离开面板
 node test/client-render-smoke.mjs # 渲染冒烟：用最小 React 真构建 main 面板两个 tab 与 conversation.view（抓渲染期 TypeError）
 node test/skill-group-smoke.mjs # 技能分组：provider 分类、组开关写真实 frontmatter、只读跳过、系统组/未知 provider 拒绝

@@ -6,6 +6,11 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
+- **MCP 与技能支持拖动排序（用 SortableJS，不手写拖拽）**：技能页 / MCP 页的卡片可以直接按住拖动改顺序，松手即存；顺序存 `order.json`（`{skills:[], mcp:[]}`），刷新、重启都保留。工具栏有「拖动卡片可排序」提示。
+  - 拖拽库来自本包自己的依赖 `sortablejs`，由宿主路由 `GET /vendor/sortable` 提供 **ESM 构建**，客户端用**动态 `import()`** 取用（bundle 没有打包器，不能 `require` npm 包）；路由缺失只是没有拖拽，不影响页面。
+  - `GET/POST /skill-mcp-manager/order`（单路由按方法分发，符合 webServer 不许两条同 path 的约定）：写前校验 `kind`、数组化、去重；未知名字不落盘。排序是纯展示，**不影响模型看到的目录**。
+  - 踩坑（真机定位）：`setApi(SortableClass)` —— React 把函数当成 **updater** 调用，直接触发 `Sortable(el)` 的构造函数守卫，报 `Sortable: el must be an HTMLElement`；必须 `setApi(() => Class)`。
+  - 测试：新增 `test/order-smoke.mjs`（写入/去重/落盘/重启读回/坏输入 400/DELETE 405 + vendor 路由返回真 SortableJS ≥10KB 且 content-type 正确），已加入发布基线。真机验证：真实鼠标拖拽把第 1 张卡拖到第 4 位 → DOM 变 `beta,gamma,delta,alpha`、宿主收到同样的 `POST /order`、提示「已保存排序（4 项）」；把 `order.json` 预置成 `delta,gamma,beta,alpha` 再加载，页面按该顺序渲染；两轮 0 console 异常。
 - **修：能力库导入配置报 `HTTP 405`**：桌面端只重载 client 时，**宿主还是旧版插件**（没有 `/mcp/config` 路由），新的客户端却直接去问，于是 405 被当成「配置有错」显示。现在按「新客户端 + 旧宿主」规则降级 ——
   - 客户端内置一份**精简镜像解析器**（外壳、修片段、`http`/`stdio` 映射、名字与字段校验与宿主同一套）；宿主路由 405/404/返回 HTML 时自动改用它，并在弹窗顶部明说「当前宿主还是旧版插件（没有导入接口）：格式化与校验在本地完成，导入请升级插件并重启后再试」。
   - 导入：先试 `/mcp/config/import`；缺路由时退化为逐个 `POST /mcp/add`；连 `/mcp/add` 都缺路由则直接报「当前宿主的插件版本还没有导入接口（需要升级插件并重启 DSH）；配置已在本地校验：可用 N 个，问题 M 处」——不再把 405 当配置错误。

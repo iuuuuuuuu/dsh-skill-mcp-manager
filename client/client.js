@@ -59,6 +59,35 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
   // modal, so a plugin that brings twenty things cannot push the page into a wall.
   const PLUGIN_ROW_VISIBLE = 3;
 
+  // Drag ordering. The library has no bundler, so SortableJS is loaded from the host
+  // package itself (served at /vendor/sortable) — a maintained library, not hand-rolled
+  // drag maths. Names are persisted per kind; the model never sees this order.
+  const SORTABLE_SRC = "/skill-mcp-manager/vendor/sortable";
+
+  function useSortable(enabled) {
+    const [api, setApi] = useState(null);
+    useEffect(() => {
+      if (!enabled || api !== null) return;
+      let cancelled = false;
+      // Dynamic import of the ESM build the host serves: no globals, no <script> tag,
+      // and a failure (old host without the route) simply means no dragging.
+      import(SORTABLE_SRC)
+        .then((mod) => { if (!cancelled) setApi(() => (mod && (mod.default || mod.Sortable)) || null); })
+        .catch(() => { if (!cancelled) setApi(null); });
+      return () => { cancelled = true; };
+    }, [api, enabled]);
+    return api;
+  }
+
+  // Stable: names the saved order does not mention keep their natural place at the end.
+  function applyOrder(order, items) {
+    const rank = (name) => {
+      const index = order.indexOf(name);
+      return index < 0 ? Number.MAX_SAFE_INTEGER : index;
+    };
+    return items.slice().sort((a, b) => rank(a.name) - rank(b.name));
+  }
+
   // One overlay for the whole library page: 展开更多, 详情, 新增 MCP, 导入, 残留进程 and
   // 高级设置 all open here — nothing is laid out inline on the page.
   // A minimal mirror of lib/mcp-config.js. The desktop shell can reload this bundle
@@ -429,6 +458,9 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [busyGroup, setBusyGroup] = useState("");
     // Which plugin group is opened in 展开更多 (its key), plus the MCP 新增 form.
     const [overflow, setOverflow] = useState(null);
+    // Drag order (persisted per kind on the host) + the SortableJS instance.
+    const [order, setOrder] = useState({ skills: [], mcp: [] });
+    const sortable = useSortable(true);
     // Workspace selector: project-level skills are keyed by cwd, so the list is
     // re-read whenever the picker changes.
     const [workspace, setWorkspace] = useState("");
@@ -470,6 +502,72 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     }, []);
 
     useEffect(() => { refresh(); }, [refresh]);
+    useEffect(() => {
+      let cancelled = false;
+      getJson("/skill-mcp-manager/order")
+        .then((data) => { if (!cancelled) setOrder({ skills: data.skills || [], mcp: data.mcp || [] }); })
+        .catch(() => {});
+      return () => { cancelled = true; };
+    }, []);
+
+    // Attach SortableJS once per grid (data-sort-kind marks the grids it owns).
+    useEffect(() => {
+      if (sortable === null || typeof document === "undefined") return;
+      const grids = document.querySelectorAll("[data-sort-kind]:not([data-sort-ready])");
+      if (grids.length === 0) return;
+      if (typeof sortable.create !== "function") return;
+      for (const grid of grids) {
+        if (!grid || !(grid instanceof Element)) continue;
+        try {
+          sortable.create(grid, {
+            animation: 150,
+            draggable: "[data-cap-name]",
+            ghostClass: "smx-card--ghost",
+            onEnd: () => { persistOrder(grid.dataset.sortKind); },
+          });
+          grid.dataset.sortReady = "1";
+        } catch {
+          // A drag library that cannot attach must cost dragging, not the page.
+        }
+      }
+      for (const grid of grids) {
+        if (!(grid instanceof Element)) continue;
+        try {
+          sortable.create(grid, {
+            animation: 150,
+            draggable: "[data-cap-name]",
+            ghostClass: "smx-card--ghost",
+            onEnd: () => { persistOrder(grid.dataset.sortKind); },
+          });
+          grid.dataset.sortReady = "1";
+        } catch {
+          // A drag library that cannot attach must cost dragging, not the page.
+        }
+      }
+    });
+
+    // Read the DOM (what the user now sees) rather than trusting the drag event: the
+    // order saved is exactly the order on screen.
+    async function persistOrder(kind) {
+      if (kind !== "skills" && kind !== "mcp") return;
+      const names = [];
+      const grids = document.querySelectorAll("[data-sort-kind=\"" + kind + "\"]");
+      for (const grid of grids) {
+        for (const card of grid.querySelectorAll("[data-cap-name]")) {
+          const name = card.dataset.capName;
+          if (typeof name === "string" && name !== "" && !names.includes(name)) names.push(name);
+        }
+      }
+      if (names.length === 0) return;
+      try {
+        const data = await postJson("/skill-mcp-manager/order", { kind, names });
+        setOrder({ skills: data.skills || [], mcp: data.mcp || [] });
+        setNotice("已保存排序（" + names.length + " 项）");
+      } catch (err) {
+        setError(errText(err));
+      }
+    }
+
     useEffect(() => { refreshGroups(); }, [refreshGroups]);
 
     async function groupAction(payload) {
@@ -593,6 +691,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     function skillCard(skill) {
       return h("article", {
         key: skill.name,
+        "data-cap-name": skill.name,
         className: cx("smx-card", skill.readonly && "is-readonly", !skill.modelInvocable && "is-dimmed"),
       },
         h("div", { className: "smx-card__head" },
@@ -642,7 +741,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const originGroups = [];
     {
       const byKey = new Map();
-      for (const skill of skills || []) {
+      for (const skill of applyOrder(order.skills, skills || [])) {
         const origin = originOf(skill);
         let group = byKey.get(origin.key);
         if (group === undefined) {
@@ -714,8 +813,8 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         ),
         unfolded
           ? (members.length === 0
-              ? h("div", { className: "smx-cards" }, h(Empty, null, "还没有技能放进这个分组 —— 在技能卡片上选分组"))
-              : h("div", { className: "smx-cards" }, members.map(skillCard)))
+              ? h("div", { className: "smx-cards", "data-sort-kind": "skills" }, h(Empty, null, "还没有技能放进这个分组 —— 在技能卡片上选分组"))
+              : h("div", { className: "smx-cards", "data-sort-kind": "skills" }, members.map(skillCard)))
           : null,
       );
     });
@@ -776,7 +875,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                 ),
           ),
         ),
-        unfolded ? h("div", { className: "smx-cards" }, rowOf(group).map(skillCard)) : null,
+        unfolded ? h("div", { className: "smx-cards", "data-sort-kind": "skills" }, rowOf(group).map(skillCard)) : null,
       );
     });
 
@@ -867,6 +966,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
             onClick: () => groupAction({ action: "create", name: newGroupName }).then(() => setNewGroupName("")),
           }, "新建分组"),
         ),
+        h("span", { className: "smx-count", title: "按住卡片拖动即可调整顺序，顺序只影响这里（不影响模型）" }, "拖动卡片可排序"),
         h("button", { type: "button", className: "smx-btn", disabled: busyImport, onClick: scanImport }, busyImport ? "扫描中\u2026" : "导入本地技能"),
         h("button", { type: "button", className: "smx-btn", onClick: refresh }, "刷新"),
       ),
@@ -956,7 +1056,9 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // Set when the host has no /mcp/config routes yet (an older plugin build): the modal
     // then formats and checks locally, and imports server by server through /mcp/add.
     const [configDegraded, setConfigDegraded] = useState(false);
-
+    // Drag order for the MCP lists (persisted on the host; presentation only).
+    const [order, setOrder] = useState({ skills: [], mcp: [] });
+    const sortable = useSortable(true);
     // 新增: the host validates by trial-connecting; a failure comes back as 400 and is
     // shown as-is, because the server's own words are what tells the user what to fix.
     // Paste → pretty-print immediately (local, no roundtrip), then let the host parse:
@@ -1079,6 +1181,71 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         setLoading(false);
       }
     }, []);
+
+    useEffect(() => {
+      let cancelled = false;
+      getJson("/skill-mcp-manager/order")
+        .then((data) => { if (!cancelled) setOrder({ skills: data.skills || [], mcp: data.mcp || [] }); })
+        .catch(() => {});
+      return () => { cancelled = true; };
+    }, []);
+
+    // Attach SortableJS once per grid (data-sort-kind marks the grids it owns).
+    useEffect(() => {
+      if (sortable === null || typeof document === "undefined") return;
+      const grids = document.querySelectorAll("[data-sort-kind]:not([data-sort-ready])");
+      if (grids.length === 0) return;
+      if (typeof sortable.create !== "function") return;
+      for (const grid of grids) {
+        if (!grid || !(grid instanceof Element)) continue;
+        try {
+          sortable.create(grid, {
+            animation: 150,
+            draggable: "[data-cap-name]",
+            ghostClass: "smx-card--ghost",
+            onEnd: () => { persistOrder(grid.dataset.sortKind); },
+          });
+          grid.dataset.sortReady = "1";
+        } catch {
+          // A drag library that cannot attach must cost dragging, not the page.
+        }
+      }
+      for (const grid of grids) {
+        if (!(grid instanceof Element)) continue;
+        try {
+          sortable.create(grid, {
+            animation: 150,
+            draggable: "[data-cap-name]",
+            ghostClass: "smx-card--ghost",
+            onEnd: () => { persistOrder(grid.dataset.sortKind); },
+          });
+          grid.dataset.sortReady = "1";
+        } catch {
+          // A drag library that cannot attach must cost dragging, not the page.
+        }
+      }
+    });
+
+    // The DOM is the truth: what is on screen is what gets saved.
+    async function persistOrder(kind) {
+      if (kind !== "skills" && kind !== "mcp") return;
+      const names = [];
+      const grids = document.querySelectorAll("[data-sort-kind=\"" + kind + "\"]");
+      for (const grid of grids) {
+        for (const card of grid.querySelectorAll("[data-cap-name]")) {
+          const name = card.dataset.capName;
+          if (typeof name === "string" && name !== "" && !names.includes(name)) names.push(name);
+        }
+      }
+      if (names.length === 0) return;
+      try {
+        const data = await postJson("/skill-mcp-manager/order", { kind, names });
+        setOrder({ skills: data.skills || [], mcp: data.mcp || [] });
+        setNotice("已保存排序（" + names.length + " 项）");
+      } catch (err) {
+        setError(errText(err));
+      }
+    }
 
     useEffect(() => { refresh(false); }, [refresh]);
 
@@ -1347,6 +1514,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
 
     function nativeCard(item) {
       return h("article", {
+        "data-cap-name": item.serverName,
         key: "native-" + item.id,
         className: cx("smx-card", !item.enabled && "is-dimmed"),
       },
@@ -1465,14 +1633,14 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       );
     }
 
-    const cards = (entries || []).map((entry) => {
+    const cards = applyOrder(order.mcp, entries || []).map((entry) => {
       const state = statusOf(entry);
       const failure = failureOf(entry);
       const live = checks[entry.name];
       const running = live !== undefined && live.status === "running";
       const differs = (live !== undefined && live.toolsDiffer === true)
         || (live === undefined && entry.lastCheck !== null && entry.lastCheck !== undefined && entry.lastCheck.toolsDiffer === true);
-      return h("article", { key: entry.name, className: "smx-card" },
+      return h("article", { key: entry.name, "data-cap-name": entry.name, className: "smx-card" },
         h("div", { className: "smx-card__head" },
           h("span", { className: cx("smx-dot", "smx-dot--" + state.tone), title: state.label }),
           h("div", { className: "smx-card__ident" },
@@ -1585,7 +1753,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
           ),
           ),
         ),
-        unfolded ? h("div", { className: "smx-cards" }, group.items.slice(0, PLUGIN_ROW_VISIBLE).map(nativeCard)) : null,
+        unfolded ? h("div", { className: "smx-cards", "data-sort-kind": "mcp" }, applyOrder(order.mcp, group.items).slice(0, PLUGIN_ROW_VISIBLE).map(nativeCard)) : null,
       );
     });
 
@@ -1616,6 +1784,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
           h("button", { type: "button", className: "smx-btn", onClick: toggleReveal }, reveal ? "隐藏密钥" : "显示密钥"),
           h("button", { type: "button", className: "smx-btn", onClick: () => refresh(reveal) }, "刷新"),
           h("button", { type: "button", className: "smx-btn", onClick: () => setAdvanced(true) }, "高级设置"),
+          h("span", { className: "smx-count", title: "按住卡片拖动即可调整顺序，顺序只影响这里（不影响模型）" }, "拖动卡片可排序"),
         ),
       ),
       advanced ? h(Modal, { title: "高级设置", onClose: () => setAdvanced(false) }, h("div", { className: "smx-settings-card__body" },
@@ -1684,7 +1853,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                 ),
                 (entries || []).length === 0
                   ? h(Empty, null, "能力库里还没有 MCP 服务器")
-                  : h("div", { className: "smx-cards" }, cards),
+                  : h("div", { className: "smx-cards", "data-sort-kind": "mcp" }, cards),
               ),
               nativeSections,
             ),
@@ -2380,6 +2549,10 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-card { display:flex; flex-direction:column; gap:8px; min-width:0; padding:12px; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); transition:border-color .12s ease, box-shadow .12s ease; }",
     ".smx-card:hover { border-color:var(--dsw-alias-border-l2); box-shadow:0 2px 12px rgba(0,0,0,.07); }",
     ".smx-card.is-readonly { border-style:dashed; }",
+    // While dragging (SortableJS): the card being moved fades, its placeholder stays put.
+    ".smx-card--ghost { opacity:.45; border-style:dashed; background:var(--dsw-alias-bg-layer-2); }",
+    "[data-sort-kind] [data-cap-name] { cursor:grab; }",
+    "[data-sort-kind] [data-cap-name]:active { cursor:grabbing; }",
     ".smx-card.is-dimmed .smx-card__name { color:var(--dsw-alias-label-secondary); }",
     ".smx-card__head { display:flex; align-items:flex-start; gap:8px; min-width:0; }",
     ".smx-mark { flex:none; display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; font-size:10px; font-weight:700; letter-spacing:.02em; color:var(--dsw-alias-brand-primary); background:var(--dsw-alias-bg-layer-2); border:1px solid var(--dsw-alias-border-l1); }",
