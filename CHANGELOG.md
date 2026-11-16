@@ -6,6 +6,9 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
+- **能力库所有浮层统一成弹窗（不再有右侧抽屉、不再页面平铺）**：详情、新增 MCP、导入本地技能、残留进程清理、高级设置全部走同一个 `Modal`（居中面板 + 遮罩 + `关闭`）；`展开更多` 也用它。`.smx-drawer` 从右侧抽屉改成**居中面板**（`width:min(720px,100%)` + `max-height:min(86vh,860px)` 内滚），所以能力管理里的「详情」同样变成弹窗。
+  - 「高级设置」从页面里那块可展开卡片改成工具栏按钮 + 弹窗；「导入本地技能」不再作为页面区块出现，进弹窗并去掉重复标题。
+  - 真机判读：详情 / 新增 MCP / 高级设置 / 导入四个浮层都量到 `centred=true`（面板水平居中），0 console 异常。
 - **能力库：MCP 新增入口**：MCP 页头部多了「新增 MCP」，右侧抽屉填名称 / 传输（stdio 命令 + 参数，或 streamable-http URL）/ 备注即可注册。
   - 宿主新增 `POST /mcp/add` → `addMcp()`，与 `mcp_register` 工具**共用同一个 `registerServerEntry()`**：**注册前真连一次 + 拉工具清单**，连不上就 400 且不写注册表；重名即更新；UI 是人点的，所以不弹「本地命令审批」（那道门是防模型的）。
   - 测试：新增 `test/mcp-add-smoke.mjs`（真 stdio fixture：注册成功并落盘、重名更新不产生重复、连不上 400 且注册表不变、非法名字/缺传输/缺 URL/缺命令全部拒绝），已加入发布基线。

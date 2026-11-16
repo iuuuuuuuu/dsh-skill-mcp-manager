@@ -59,13 +59,15 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
   // modal, so a plugin that brings twenty things cannot push the page into a wall.
   const PLUGIN_ROW_VISIBLE = 3;
 
-  function OverflowModal({ title, count, onClose, children }) {
+  // One overlay for the whole library page: 展开更多, 详情, 新增 MCP, 导入, 残留进程 and
+  // 高级设置 all open here — nothing is laid out inline on the page.
+  function Modal({ title, count, onClose, children }) {
     return h("div", { className: "smx-modal", role: "dialog", "aria-label": title },
       h("div", { className: "smx-modal__scrim", onClick: onClose }),
       h("div", { className: "smx-modal__panel" },
         h("div", { className: "smx-modal__head" },
           h("span", { className: "smx-modal__title" }, title),
-          h("span", { className: "smx-group__count" }, count + " 个"),
+          count === undefined || count === null ? null : h("span", { className: "smx-group__count" }, count + " 个"),
           h("button", { type: "button", className: "smx-btn", onClick: onClose }, "关闭"),
         ),
         h("div", { className: "smx-modal__body" }, children),
@@ -675,13 +677,13 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
 
     // The import sheet reviews exactly what the host offered; nothing is copied
     // until 导入 is pressed, and a stale sheet cannot overwrite (the host re-plans).
-    const importSheet = importPlan === null ? null : h("section", { className: "smx-import" },
+    const importSheet = importPlan === null ? null : h(Modal, {
+      title: "从本地 agent 导入技能",
+      onClose: () => { setImportPlan(null); setImportPicked([]); },
+    }, h("div", { className: "smx-import" },
       h("div", { className: "smx-import__head" },
-        h("div", null,
-          h("div", { className: "smx-import__title" }, "从本地 agent 导入技能"),
-          h("div", { className: "smx-import__sub" },
-            "会把选中的目录复制到 " + importPlan.target + "，源目录不动；同名技能不会被覆盖"),
-        ),
+        h("div", { className: "smx-import__sub" },
+          "会把选中的目录复制到 " + importPlan.target + "，源目录不动；同名技能不会被覆盖"),
         h("div", { className: "smx-import__actions" },
           h("button", {
             type: "button",
@@ -725,7 +727,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                 );
               })),
       )),
-    );
+    ));
 
     return h("div", { className: "smx" },
       h("div", { className: "smx-head" },
@@ -770,7 +772,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         : skills && skills.length === 0 ? h(Empty, null, "没有可管理的技能（bundle 型 SKILL.md）")
         : h("div", { className: "smx-groups" }, [...customSections, ...originSections]),
       // 展开更多: every member of that plugin group, in the same cards.
-      overflow === null ? null : h(OverflowModal, {
+      overflow === null ? null : h(Modal, {
         title: overflow.title,
         count: overflow.items.length,
         onClose: () => setOverflow(null),
@@ -1416,18 +1418,10 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
           }, scanningOrphans ? "扫描中\u2026" : "清理残留进程"),
           h("button", { type: "button", className: "smx-btn", onClick: toggleReveal }, reveal ? "隐藏密钥" : "显示密钥"),
           h("button", { type: "button", className: "smx-btn", onClick: () => refresh(reveal) }, "刷新"),
+          h("button", { type: "button", className: "smx-btn", onClick: () => setAdvanced(true) }, "高级设置"),
         ),
       ),
-      h("div", { className: "smx-settings-card" },
-        h("button", {
-          type: "button",
-          className: "smx-settings-card__toggle",
-          onClick: () => setAdvanced(!advanced),
-        },
-          h("span", { className: "smx-settings-card__title" }, "高级设置"),
-          h("span", { className: "smx-count" }, advanced ? "收起" : "展开"),
-        ),
-        advanced ? h("div", { className: "smx-settings-card__body" },
+      advanced ? h(Modal, { title: "高级设置", onClose: () => setAdvanced(false) }, h("div", { className: "smx-settings-card__body" },
         h("div", { className: "smx-setting__row" },
           h("span", { className: "smx-setting__label" }, "工具描述截断（字符）"),
           h("input", {
@@ -1455,12 +1449,11 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
           h("span", { className: "smx-count" },
             bufferMb === null ? "当前 SDK 默认 10 MB；超出上限的消息会被丢弃并报错，连接不断开" : "当前 " + bufferMb + " MB"),
         ),
-        ) : null,
-      ),
+        )) : null,
       notice ? h(Notice, { kind: "success", onDismiss: () => setNotice("") }, notice) : null,
       error ? h(Notice, { kind: "error", onDismiss: () => setError("") }, error) : null,
       orphans
-        ? h("div", { className: "smx-settings-card" },
+        ? h(Modal, { title: "发现 " + orphans.candidates.length + " 个残留 MCP 子进程", onClose: () => setOrphans(null) }, h("div", { className: "smx-settings-card" },
             h("div", { className: "smx-settings-card__title" },
               "发现 " + orphans.candidates.length + " 个残留 MCP 子进程"),
             h("ul", { className: "smx-tools" },
@@ -1479,7 +1472,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
             ),
             h("span", { className: "smx-count" },
               "属于运行中 DSH 的 " + orphans.live.length + " 个进程会保留"),
-          )
+          ))
         : null,
       loading ? h(Empty, null, "加载中\u2026")
         : (entries || []).length === 0 && nativeEntries.length === 0
@@ -1521,7 +1514,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
           )
         : null,
       // 展开更多 for a plugin group, and the 新增 form.
-      overflow === null ? null : h(OverflowModal, {
+      overflow === null ? null : h(Modal, {
         title: overflow.title,
         count: overflow.items.length,
         onClose: () => setOverflow(null),
@@ -2135,9 +2128,10 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-settings-card__title { font-size:12px; font-weight:600; color:var(--dsw-alias-label-secondary); }",
     ".smx-settings-card__toggle { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; padding:0; border:none; background:none; cursor:pointer; }",
     ".smx-settings-card__body { display:flex; flex-direction:column; gap:8px; }",
-    ".smx-drawer { position:fixed; inset:0; z-index:60; display:flex; justify-content:flex-end; }",
+    // Centered overlay panel (was a right-side drawer): nothing stays docked to an edge.
     ".smx-drawer__scrim { position:absolute; inset:0; background:rgba(0,0,0,.28); }",
-    ".smx-drawer__panel { position:relative; display:flex; flex-direction:column; gap:10px; width:480px; max-width:92vw; height:100%; overflow:auto; padding:14px; background:var(--dsw-alias-bg-layer-1); border-left:1px solid var(--dsw-alias-border-l1); box-shadow:-8px 0 24px rgba(0,0,0,.16); }",
+    ".smx-drawer { position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center; padding:24px; }",
+    ".smx-drawer__panel { position:relative; display:flex; flex-direction:column; gap:10px; width:min(720px,100%); max-height:min(86vh,860px); overflow:auto; padding:18px; border-radius:16px; background:var(--dsw-alias-bg-layer-1); border:1px solid var(--dsw-alias-border-l1); box-shadow:0 20px 60px rgba(15,23,42,.24); }",
     ".smx-drawer__head { display:flex; align-items:center; gap:8px; }",
     ".smx-drawer__title { flex:1; font-size:14px; font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
     ".smx-switchline { display:flex; align-items:center; gap:6px; }",
