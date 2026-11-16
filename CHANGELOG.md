@@ -6,6 +6,13 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
+- **插件自己走完 OAuth**（`lib/oauth.js` + `POST /oauth/start` / `GET /oauth/status`）：MCP 卡片上多一个「授权」按钮（streamable-http 才有；上次检测是 401 时会高亮），点了之后 ——
+  - 宿主按 MCP 授权规范**自动发现**：`401` 的 `WWW-Authenticate: resource_metadata` → `/.well-known/oauth-protected-resource` → `/.well-known/oauth-authorization-server`（Ardot 实测：issuer/authorize/token/register 全部解析出来，scope `mcp:use`）；
+  - **动态注册**一个 public client（`token_endpoint_auth_method: none`、PKCE `S256`、回调 `http://127.0.0.1:<临时端口>/callback`，端口由系统分配，注册时带上去），再返回授权 URL；
+  - 前端 `window.open` 打开它，**人只做登录那一步**；回调落在宿主的临时监听上，宿主用 `code + code_verifier` 换 token，把 `Authorization: Bearer …` 写进该条目的 `headers` 并落盘，顺手跑一次检测补工具快照；
+  - 前端每 1 秒轮询状态，成功即刷新卡片并提示「授权完成」；拒绝/超时/换 token 失败都会把**服务器原话**显示出来；5 分钟没完成自动关掉监听端口。
+  - 测试：新增 `test/oauth-smoke.mjs`，用一个**假授权服务器**端到端跑通（发现 → 注册 → PKCE → 回调 → 换 token → header 落盘 → 用该 token 请求成功），已加入发布基线。
+  - 注意：授权后的第一次探活是「尽力而为」——有些服务要 session 协商，快照可能仍为空，但 token 已存好，卡片上再点「检测」即可。
 - **注册「需要浏览器 OAuth 的服务」不再被拒**：`mcp_register` 与「新增 MCP」多了 `skipTrial`（界面是「授权」一行的勾选：『跳过连通检测』）。勾上就只登记、不试连，条目立刻出现在能力库；401 之类的拒绝留在「检测」结果里，等授权完再点检测即可。
   - 背景：Ardot 云端 MCP（`https://ardot.tencent.com/mcp`）是 OAuth 保护的（401 + `WWW-Authenticate: Bearer realm=mcpgateway, scope=mcp:use`，`.well-known/oauth-protected-resource/mcp` 指向自身作为授权服务器，支持 authorization_code + PKCE 与动态注册），**试连必然 401**，所以原来的「连不上就不写注册表」把它挡在门外。
   - 踩坑：给判定式加条件时把 `||` 链写成了逗号表达式（`a || b, c`），整条 `needsTrial` 变成只取最后一个操作数——`mcp-add-smoke` 与 `mcp-config-smoke` 立刻红（「失败的 add 不该动注册表」/「导入的条目应带工具快照」），证明基线真的会抓逻辑错。

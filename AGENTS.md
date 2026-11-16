@@ -90,6 +90,7 @@ docs/           程序架构（DESIGN.zh.md）、交接（HANDOFF.md）、截图
 - **客户端有一份解析器镜像，只为旧宿主**（2026-11-16）：桌面端可以只重载 client，宿主仍是旧版插件、没有 `/mcp/config` 路由，直接问就是 405。所以客户端内置 `localParseMcpConfig()`（外壳 / 修片段 / `http`→streamable-http / 名字与字段校验，与宿主 `lib/mcp-config.js` 同一套规则），**仅在路由 404/405/返回 HTML 时启用**，并在弹窗里明说这是旧版宿主、导入需升级重启；导入退化为逐个 `/mcp/add`。**改宿主解析规则必须同步改镜像**（镜像不是权威，权威仍是宿主；它存在只是为了不让界面在旧宿主上装作坏掉）。
 - **拖动排序用 SortableJS，库从宿主路由取**（2026-11-16）：`sortablejs` 是本包依赖，宿主 `GET /vendor/sortable` 返回它的 **ESM** 构建，客户端 `import()` 后 `create()` 到带 `data-sort-kind` 的网格上（卡片带 `data-cap-name`）；松手时**按 DOM 顺序**收集名字 `POST /order` 落 `order.json`。**不要手写拖拽**。两个坑：① `setState(类函数)` 会被 React 当 updater 调用（Sortable 立刻抛 `el must be an HTMLElement`），必须 `setState(() => 值)`；② 客户端 bundle 无打包器，不能 `require` npm，只能动态 `import()` 宿主路由（路由缺失=没有拖拽，不能影响页面）。顺序是纯展示，不进模型目录。
 - **表单用一套栅格**（2026-11-16）：弹窗里的表单统一 `.smx-form`（132px 标签列 + `minmax(0,1fr)` 控件列、控件 30px 高），别再给单个 input 写宽度——长短不一会一眼看出来。
+- **OAuth 由插件自己走完，别让用户手抄 code**（2026-11-16）：`lib/oauth.js` 负责发现（`resource_metadata` → `oauth-protected-resource` → `oauth-authorization-server`）、PKCE、动态注册（`token_endpoint_auth_method: none`）与换 token；`POST /oauth/start` 在**临时 loopback 端口**上开回调（端口由系统分配，注册客户端时带上它），返回授权 URL 给前端 `window.open`；回调里换完 token 直接写进条目 `headers.Authorization` 并落盘。**人类的唯一动作是浏览器登录**。注意：授权后的探活是尽力而为（有的服务要 session 协商），不要把它当成「授权失败」。
 - **OAuth 保护的服务要能「只登记」**（2026-11-16）：`registerServerEntry` 的 `skipTrial`（工具参数 + 「新增 MCP」的『授权』勾选）让注册跳过握手 —— 401 的 MCP（如 Ardot 云端）永远过不了试连，硬性「连不上不落盘」只会把它挡死。登记后 401 留在检测结果里，授权完再检测。**别把 `needsTrial` 这类 `||` 链改成逗号**：逗号表达式只取最后一个操作数，等于把整条判定删了（`mcp-add-smoke` / `mcp-config-smoke` 会立刻红）。
 - **能力库的新增 MCP 走一条代码路径**（2026-11-16）：`POST /mcp/add` → `addMcp()` → `registerServerEntry(args, { exec })`，与 `mcp_register` 工具**同一个函数**（真连一次 + 拉工具清单才落盘，失败 400 不写注册表，重名即更新）。`exec === null` 表示人点的，**不弹本地命令审批**——那道门只防模型。新增入口不要再复制一份注册逻辑。
 - **所有浮层都是居中弹窗，不是抽屉**（2026-11-16 定稿）：能力库与能力管理的详情、新增 MCP、导入本地技能、残留进程清理、高级设置、展开更多，全部走同一个 `Modal`（遮罩 + 居中面板 + `关闭`），`.smx-drawer` 已被改成居中面板（壳名沿用，视觉不是抽屉）。**页面里不要再平铺可展开的区块**（高级设置、导入面板都从页面挪进弹窗）。新增浮层直接复用 `Modal`，别再写第三种壳。
@@ -138,6 +139,7 @@ node test/mcp-check-smoke.mjs  # 管理页连接检测：真 stdio fixture 的�
 node test/mcp-add-smoke.mjs    # 新增 MCP 路由：真 stdio fixture、重名更新、失败不落盘、形状守卫
 node test/mcp-config-smoke.mjs # 粘贴配置解析（外壳/片段/错误路径）+ 逐条导入
 node test/order-smoke.mjs      # 拖动排序：写入/去重/持久化 + vendor 路由服务真 SortableJS
+node test/oauth-smoke.mjs      # OAuth：发现/动态注册/PKCE/本地回调/换 token 写进 headers（假授权服务器端到端）
 node test/client-slots-smoke.mjs # 客户端座位契约：设置页 + 侧边栏行/main 面板的 id/惰性注入/注册顺序/图标/卸载离开面板
 node test/client-render-smoke.mjs # 渲染冒烟：用最小 React 真构建 main 面板两个 tab 与 conversation.view（抓渲染期 TypeError）
 node test/skill-group-smoke.mjs # 技能分组：provider 分类、组开关写真实 frontmatter、只读跳过、系统组/未知 provider 拒绝

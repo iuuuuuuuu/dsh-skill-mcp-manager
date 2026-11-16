@@ -997,6 +997,13 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
   // fast enough to feel like one action and gentle enough not to stall a host.
   const CHECK_CONCURRENCY = 3;
 
+  // A recorded failure that means "you are not authorised yet", so the card can point at
+  // the 授权 button instead of leaving the user with a bare 401.
+  function needsOAuth(entry) {
+    const text = String((entry && entry.lastCheck && entry.lastCheck.error) || "") + " " + String((entry && entry.lastError) || "");
+    return /401|403|unauthor|oauth|bearer|token/i.test(text);
+  }
+
   function formatMs(value) {
     if (typeof value !== "number" || !Number.isFinite(value)) return "\u2014";
     return value < 1000 ? Math.round(value) + " ms" : (value / 1000).toFixed(1) + " s";
@@ -1056,6 +1063,8 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // Set when the host has no /mcp/config routes yet (an older plugin build): the modal
     // then formats and checks locally, and imports server by server through /mcp/add.
     const [configDegraded, setConfigDegraded] = useState(false);
+    // Which server is mid-OAuth (the browser page is open and we are polling).
+    const [oauthBusy, setOauthBusy] = useState("");
     // Drag order for the MCP lists (persisted on the host; presentation only).
     const [order, setOrder] = useState({ skills: [], mcp: [] });
     const sortable = useSortable(true);
@@ -1228,6 +1237,39 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     });
 
     // The DOM is the truth: what is on screen is what gets saved.
+    // OAuth: the host discovers the authorization server, registers a public client and
+    // gives us a URL. Opening it is the only human step (login happens in the browser);
+    // the callback goes to the host's loopback listener, so we just poll for the result.
+    async function authorizeMcp(name) {
+      setOauthBusy(name);
+      setError("");
+      try {
+        const data = await postJson("/skill-mcp-manager/oauth/start", { name });
+        if (typeof data.authorizeUrl === "string" && data.authorizeUrl !== "") {
+          window.open(data.authorizeUrl, "_blank", "noopener");
+        }
+        setNotice("已打开授权页面（" + name + "）：在浏览器里登录并同意，之后这里会自动刷新");
+        for (let attempt = 0; attempt < 120; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          const status = await getJson("/skill-mcp-manager/oauth/status?name=" + encodeURIComponent(name));
+          if (status.status === "done") {
+            setNotice(name + " 授权完成");
+            await refresh(reveal);
+            return;
+          }
+          if (status.status === "error" || status.status === "expired") {
+            setError(name + " 授权失败：" + (status.error || status.status));
+            return;
+          }
+        }
+        setError("授权没有在 2 分钟内完成，可以再点一次「授权」");
+      } catch (err) {
+        setError(errText(err));
+      } finally {
+        setOauthBusy("");
+      }
+    }
+
     async function persistOrder(kind) {
       if (kind !== "skills" && kind !== "mcp") return;
       const names = [];
@@ -1672,6 +1714,15 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               disabled: running,
               onClick: () => checkOne(entry),
             }, running ? "检测中\u2026" : "检测"),
+            entry.transport === "streamable-http"
+              ? h("button", {
+                  type: "button",
+                  className: cx("smx-btn", needsOAuth(entry) && "smx-btn--primary"),
+                  disabled: oauthBusy === entry.name,
+                  title: needsOAuth(entry) ? "这个服务器要求 OAuth：点这里在浏览器里登录" : "重新走一次 OAuth 授权",
+                  onClick: () => authorizeMcp(entry.name),
+                }, oauthBusy === entry.name ? "授权中…" : "授权")
+              : null,
             h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => { setOutput(""); setDetail(entry.name); } }, "详情"),
           ),
           confirming === entry.name
