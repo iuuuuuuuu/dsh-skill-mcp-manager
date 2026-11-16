@@ -151,7 +151,8 @@ const authorize = new URL(res.body.authorizeUrl);
 check(authorize.searchParams.get("code_challenge_method") === "S256", "the flow must use PKCE S256");
 check(authorize.searchParams.get("scope") === "mcp:use", "the scope must come from the resource metadata");
 check(seen.register !== null && Array.isArray(seen.register.redirect_uris), "a client must be registered with a redirect uri");
-check(seen.register.redirect_uris[0].startsWith("http://127.0.0.1:"), "the redirect must be loopback: " + seen.register.redirect_uris[0]);
+// MCP 授权规范推荐 http://localhost:<port>/callback；不少服务器把 127.0.0.1 拒在白名单外。
+check(/^http:\/\/localhost:\d+\/callback$/.test(seen.register.redirect_uris[0]), "the redirect must be a loopback localhost URL: " + seen.register.redirect_uris[0]);
 
 // 3) act like the browser: follow the authorize redirect into the host's callback
 const callback = await fetch(res.body.authorizeUrl, { redirect: "follow" });
