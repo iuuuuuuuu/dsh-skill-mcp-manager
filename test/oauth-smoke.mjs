@@ -186,8 +186,7 @@ const entry = stored.entries.find((item) => item.name === "cloud");
 console.log("stored headers:", JSON.stringify(entry.headers), "| oauth:", JSON.stringify(entry.oauth));
 check(entry.headers.Authorization === "Bearer token-123", "the bearer token must be stored in headers");
 check(entry.oauth && entry.oauth.scope === "mcp:use", "the oauth metadata must be recorded");
-// The probe that runs after the exchange is best-effort (a server may need more than a
-// bare initialize); what the flow must guarantee is that the stored token is accepted.
+// Authorization stores a usable token and records a fresh connection check before done.
 const authenticated = await fetch(origin + "/mcp", {
   method: "POST",
   headers: { "content-type": "application/json", authorization: entry.headers.Authorization },
@@ -198,6 +197,8 @@ console.log("authenticated ->", authenticated.status, JSON.stringify(authenticat
 check(authenticated.status === 200, "the stored token must be accepted by the server, got " + authenticated.status);
 check(Array.isArray(authenticatedBody.result?.tools) && authenticatedBody.result.tools.length === 1, "the authenticated call must return the tool list");
 console.log("lastCheck after flow:", JSON.stringify(entry.lastCheck));
+check(entry.lastCheck?.ok === true && entry.lastCheck.toolCount === 1,
+  "done must follow the actual connection check so refreshed cards no longer show stale 401");
 
 // 5) status endpoint reports the finished flow
 {

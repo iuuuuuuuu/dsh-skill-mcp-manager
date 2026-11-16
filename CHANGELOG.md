@@ -6,6 +6,10 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
+- **OAuth 交互改为等待卡片 → Toast → 自动更新连接状态**：点击授权立即显示居中 loading 卡片，逐步说明准备登录、等待浏览器、保存授权与检查连接。成功后关闭等待卡片、右下角 Toast 提示（4 秒自动消失，可手动关闭），静默刷新 MCP 列表，不清空页面。失败保留原因及重试入口，关闭等待卡片不停止当前轮询。
+  - 回调先实际调用 `uiHandlers.testMcp()` 记录连接结果，再报告 done（之前误调不存在的 `testMcp`，异常被吞，卡片状态未更新）；客户端清除该服务器旧的手动检测缓存，避免旧 401 覆盖新状态。授权成功与连接失败仍分开处理。
+  - 回归：组件点击事件覆盖 loading/成功 Toast/重读列表/清除旧 401；注入不清除旧检测缓存的缺陷会红。历史会话审核测试的 pending 禁用规则缩小到审核 UI，自身仍可通过故障注入变红，不再误伤 OAuth 的合法 pending 状态。修复微渲染器未传 props.children 导致 Modal 内容不参与断言的缺陷。真实 React + 独立无头 Chrome 逐阶段验证、截图判读成功 Toast 与新连通状态，含失败重试和 Toast 自动消失；不操作用户浏览器或重新发起真实账号授权。
+
 - **修：Ardot OAuth 授权页 400 `invalid_target`**：授权请求和 token 交换都补上保护资源元数据中的 `resource`（Ardot 为 `https://ardot.tencent.com/mcp`），而不是只有 scope。真实授权 API 对照：相同动态客户端、PKCE、回调地址下，无 resource 为 400 `invalid_target`，有 resource 为 401 `Unauthenticated`（开始校验用户登录态）。
   - 回归测试先验证缺字段会红，再让假授权服务器在授权与换 token 两端严格拒绝缺失/错误 resource；生产路径完整跑通。真实用户登录和最终 token 尚需本人确认，不把未登录探针算授权成功。
 

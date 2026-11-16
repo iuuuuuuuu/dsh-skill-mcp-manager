@@ -548,3 +548,7 @@ tmp/               # 插件内部临时文件（AI 不直接引用；无 args_fi
 授权服务器的 scope 只表示权限，不能代替目标资源。`startMcpOAuth()` 从 `planOAuth()` 的保护资源元数据取 `resource`，将其写入授权 URL 并保存在当次 flow；回调用同一个 resource 交换授权码。`buildAuthorizeUrl()` 与 `exchangeCode()` 分别把它放入查询参数及 application/x-www-form-urlencoded 表单（RFC 8707）。不得用授权服务器 issuer 替代 MCP 资源地址。
 
 Ardot 的真实未登录 API 对照验证为：缺少 resource 返回 400 invalid_target，携带 https://ardot.tencent.com/mcp 返回 401 Unauthenticated。此前 localhost/127.0.0.1 白名单解释没有证据，撤回；现有 localhost 回调保持不变。测试在两个请求边界校验 resource，并复现缺字段的拒绝。该验证不代表用户已完成登录或已拿到真实 token。
+
+## OAuth 授权反馈（2026-11-16）
+
+McpPanel 使用独立授权状态：preparing → pending → exchanging → checking；等待期间展示居中 OAuthFeedback 卡片，并提供重新打开授权页链接。授权回调保存令牌后进入 checking，实际调用 uiHandlers.testMcp 更新 lastCheck，最后进入 done。连接检测失败仍不代表授权失败。客户端收到 done 后静默重新获取 MCP 列表，清除该名称的手动检测 checks 缓存，再关闭卡片并展示 4 秒自动消失的 OAuthToast。失败保留卡片与重试按钮；卸载或新请求使旧轮询失效。会话能力列表的加载及开关逻辑不变。

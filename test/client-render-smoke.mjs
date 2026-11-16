@@ -138,7 +138,7 @@ function slotsFor(key) {
 
 function expand(node, depth = 0) {
   if (node === null || node === undefined || typeof node !== "object") return node;
-  if (depth > 14) return node;
+  if (depth > 30) throw new Error("render tree exceeded the smoke depth limit");
   if (typeof node.type === "function") {
     const key = (node.type.name || "anon") + "@" + path.join(".");
     const instance = slotsFor(key);
@@ -151,7 +151,9 @@ function expand(node, depth = 0) {
       rerender = false;
       path.push(node.type.name || "anon");
       try {
-        tree = node.type(node.props);
+        // React passes nested elements via props.children; omitting it made every
+        // Modal body disappear from this test, hiding loading-card regressions.
+        tree = node.type({ ...node.props, children: node.children });
       } catch (error) {
         failed.push((node.type.name || "component") + " threw on render: " + String(error?.message ?? error));
         path.pop();
@@ -273,6 +275,76 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
     check(findText(tree, "存为工作区默认").length > 0, "the workspace default must be saveable from the view");
     check(findText(tree, "清除默认").length > 0, "the workspace default must be clearable from the view");
     check(findText(tree, "新对话默认：").length > 0, "the view must show the workspace default state");
+  }
+}
+
+// 3) Real component event handlers: click authorization, show its waiting card,
+// then dismiss it, toast success and replace a stale failed check with fresh host state.
+{
+  for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
+  const previousFetch = globalThis.fetch;
+  const previousOpen = window.open;
+  let complete = false;
+  let reads = 0;
+  let releaseStart;
+  let releaseStatus;
+  const start = new Promise((resolve) => { releaseStart = resolve; });
+  const status = new Promise((resolve) => { releaseStatus = resolve; });
+  const tab = { opener: {}, location: { href: "about:blank" }, close() {} };
+  window.open = () => tab;
+  const entry = () => ({
+    id: "oauth-cloud", name: "oauth-cloud", tier: "on-demand", transport: "streamable-http",
+    url: "https://oauth.example/mcp", tools: [], toolCount: 0, disabledTools: [],
+    lastCheck: complete ? { ok: true, latencyMs: 42, at: new Date().toISOString(), toolCount: 1 }
+      : { ok: false, error: "401 stale OAuth check", at: new Date().toISOString() },
+  });
+  globalThis.fetch = async (url, options) => {
+    const path = String(url);
+    if (path === "/skill-mcp-manager/oauth/start") { await start; return json({ ok: true, authorizeUrl: "https://oauth.example/authorize" }); }
+    if (path.startsWith("/skill-mcp-manager/oauth/status")) { await status; return json({ ok: true, status: "done" }); }
+    if (path === "/skill-mcp-manager/mcp/test") return json({ ok: true, check: { ok: false, error: "401 stale OAuth check" } });
+    if (path === "/skill-mcp-manager/mcp") { reads += 1; return json({ entries: [entry()], native: { supported: false, entries: [] } }); }
+    return previousFetch(url, options);
+  };
+  const props = panel.options.inject ? panel.options.inject() : {};
+  const paint = (retain = true) => renderComponent("authorization feedback", panel.component, props, retain);
+  const nodes = (tree, predicate, result = []) => {
+    if (!tree || typeof tree !== "object") return result;
+    if (predicate(tree)) result.push(tree);
+    for (const child of tree.children ?? []) nodes(child, predicate, result);
+    return result;
+  };
+  const button = (tree, text) => nodes(tree, (node) => node.type === "button" && node.children.includes(text))[0];
+  try {
+    paint(false);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    let tree = paint();
+    await button(tree, "检测").props.onClick();
+    tree = paint();
+    check(findText(tree, "401 stale OAuth check").length > 0, "fixture must create a real stale manual-check result");
+    const operation = button(tree, "授权").props.onClick();
+    tree = paint();
+    check(findText(tree, "正在准备安全授权…").length > 0, "authorization click must immediately show the loading card");
+    releaseStart();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    tree = paint();
+    check(findText(tree, "请在浏览器中完成登录与授权").length > 0, "waiting card must explain the browser step");
+    check(tab.location.href === "https://oauth.example/authorize" && tab.opener === null, "reserved tab must navigate to authorization with no opener");
+    complete = true;
+    releaseStatus();
+    await operation;
+    tree = paint();
+    check(nodes(tree, (node) => node.props.className === "smx-oauth-card").length === 0, "success must close the loading card");
+    check(findText(tree, "授权成功").length > 0, "success must show a toast rather than a permanent notice");
+    check(findText(tree, "401 stale OAuth check").length === 0, "stale failed manual check must not mask the new card status");
+    check(findText(tree, "上次连通").length > 0 && reads >= 2, "success must fetch and render the refreshed connection result");
+    nodes(tree, (node) => node.props["aria-label"] === "关闭授权成功提示")[0].props.onClick();
+    tree = paint();
+    check(findText(tree, "授权成功").length === 0, "success toast must be dismissible");
+    console.log("authorization click -> loading -> toast + fresh card: done");
+  } finally {
+    globalThis.fetch = previousFetch;
+    window.open = previousOpen;
   }
 }
 

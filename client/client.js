@@ -6,7 +6,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
 
   const React = require("react");
   const h = React.createElement;
-  const { useState, useEffect, useCallback } = React;
+  const { useState, useEffect, useCallback, useRef } = React;
 
   const name = "dsh-skill-mcp-manager";
   // Sidebar page id: the `main` panel key and the `sidebar.panellist` row id.
@@ -206,6 +206,50 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         ),
         h("div", { className: "smx-modal__body" }, children),
       ),
+    );
+  }
+
+  // Authorization owns a temporary waiting card; success is a short, dismissible toast.
+  function OAuthFeedback({ flow, onClose, onRetry }) {
+    const waiting = flow && flow.status !== "error";
+    if (!flow) return null;
+    const stages = {
+      preparing: "正在准备安全授权…",
+      pending: "请在浏览器中完成登录与授权",
+      exchanging: "登录已返回，正在保存授权…",
+      checking: "授权已保存，正在刷新连接状态…",
+    };
+    return h(Modal, { title: "MCP 授权", onClose },
+      h("div", { className: "smx-oauth-card", "aria-busy": waiting ? "true" : "false" },
+        waiting ? h("span", { className: "smx-oauth-spinner", "aria-hidden": "true" })
+          : h("span", { className: "smx-oauth-error", "aria-hidden": "true" }, "!"),
+        h("div", { className: "smx-oauth-card__name" }, flow.name),
+        h("div", { className: "smx-oauth-card__stage", role: waiting ? "status" : "alert", "aria-live": "polite" },
+          waiting ? stages[flow.status] || stages.pending : flow.error),
+        h("p", { className: "smx-oauth-card__hint" }, waiting
+          ? "完成后会自动更新 MCP 卡片，无需手动刷新。关闭此卡片不会中断授权等待。"
+          : "可以重新发起授权；不需要删除或重复导入服务器。"),
+        h("div", { className: "smx-detail__actions" },
+          flow.authorizeUrl && waiting ? h("a", {
+            className: "smx-btn", href: flow.authorizeUrl, target: "_blank", rel: "noopener noreferrer",
+          }, "重新打开授权页") : null,
+          !waiting ? h("button", { type: "button", className: "smx-btn smx-btn--primary", onClick: onRetry }, "重试授权") : null,
+        ),
+      ),
+    );
+  }
+
+  function OAuthToast({ message, onClose }) {
+    useEffect(() => {
+      const timer = setTimeout(onClose, 4000);
+      return () => clearTimeout(timer);
+    }, [message, onClose]);
+    return h("div", { className: "smx-toast smx-toast--ok smx-oauth-toast", role: "status", "aria-live": "polite" },
+      h("div", { className: "smx-toast__main" },
+        h("div", { className: "smx-toast__title" }, "授权成功"),
+        h("div", { className: "smx-toast__text" }, message),
+      ),
+      h("button", { type: "button", className: "smx-toast__close", "aria-label": "关闭授权成功提示", onClick: onClose }, "×"),
     );
   }
 
@@ -1068,6 +1112,11 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // Drag order for the MCP lists (persisted on the host; presentation only).
     const [order, setOrder] = useState({ skills: [], mcp: [] });
     const sortable = useSortable(true);
+    const [oauthFeedback, setOauthFeedback] = useState(null);
+    const [oauthToast, setOauthToast] = useState("");
+    const oauthAttempt = useRef(0);
+    useEffect(() => () => { oauthAttempt.current += 1; }, []);
+    const closeOAuthToast = useCallback(() => setOauthToast(""), []);
     // 新增: the host validates by trial-connecting; a failure comes back as 400 and is
     // shown as-is, because the server's own words are what tells the user what to fix.
     // Paste → pretty-print immediately (local, no roundtrip), then let the host parse:
@@ -1177,18 +1226,20 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
 
-    const refresh = useCallback(async (rv) => {
-      setLoading(true);
+    const refresh = useCallback(async (rv, quiet = false) => {
+      if (!quiet) setLoading(true);
       setError("");
       try {
         const data = await getJson("/skill-mcp-manager/mcp" + (rv ? "?reveal=1" : ""));
         setEntries(data.entries || []);
         setNative(data.native || { supported: false, entries: [] });
         if (Array.isArray(data.workspaces)) setWorkspaces(data.workspaces);
+        return true;
       } catch (err) {
         setError(errText(err));
+        return false;
       } finally {
-        setLoading(false);
+        if (!quiet) setLoading(false);
       }
     }, []);
 
@@ -1241,38 +1292,56 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // gives us a URL. Opening it is the only human step (login happens in the browser);
     // the callback goes to the host's loopback listener, so we just poll for the result.
     async function authorizeMcp(name) {
+      const attempt = ++oauthAttempt.current;
+      const active = () => oauthAttempt.current === attempt;
+      const update = (status, extra = {}) => {
+        if (active()) setOauthFeedback((current) => current && current.name === name
+          ? { ...current, status, ...extra } : current);
+      };
       setOauthBusy(name);
+      setOauthToast("");
+      setOauthFeedback({ name, status: "preparing" });
       setError("");
+      // Reserve a tab in the click handler so asynchronous discovery cannot be popup-blocked.
+      const tab = window.open("about:blank", "_blank");
+      if (tab) tab.opener = null;
+      let navigated = false;
       try {
         const data = await postJson("/skill-mcp-manager/oauth/start", { name });
-        if (typeof data.authorizeUrl === "string" && data.authorizeUrl !== "") {
-          window.open(data.authorizeUrl, "_blank", "noopener");
-        }
-        setNotice("已打开授权页面（" + name + "）：在浏览器里登录并同意，之后这里会自动刷新");
-        for (let attempt = 0; attempt < 120; attempt += 1) {
+        if (!active()) return;
+        if (typeof data.authorizeUrl !== "string" || data.authorizeUrl === "") throw new Error("授权接口没有返回登录地址");
+        update("pending", { authorizeUrl: data.authorizeUrl });
+        if (tab) { tab.location.href = data.authorizeUrl; navigated = true; }
+        for (let attempt = 0; attempt < 300; attempt += 1) {
           await new Promise((resolve) => setTimeout(resolve, 1000));
+          if (!active()) return;
           const status = await getJson("/skill-mcp-manager/oauth/status?name=" + encodeURIComponent(name));
+          if (!active()) return;
           if (status.status === "done") {
-            setNotice(name + " 授权完成");
-            await refresh(reveal);
+            update("checking");
+            const refreshed = await refresh(reveal, true);
+            if (!active()) return;
+            if (refreshed) setChecks((current) => {
+              const next = { ...current };
+              delete next[name]; // A previous failed manual check must not mask the fresh host result.
+              return next;
+            });
+            setOauthFeedback(null);
+            setOauthToast(name + (refreshed ? " 已授权，卡片状态已更新" : " 已授权；连接状态刷新失败，请稍后刷新"));
             return;
           }
-          if (status.status === "error" || status.status === "expired") {
-            setError(name + " 授权失败：" + (status.error || status.status));
-            return;
+          if (status.status === "error" || status.status === "expired" || status.status === "none") {
+            throw new Error(status.error || (status.status === "expired" ? "授权已超时，请重试" : "授权流程已结束，请重试"));
           }
+          update(status.status === "checking" ? "checking" : status.status === "exchanging" ? "exchanging" : "pending");
         }
-        setError("授权没有在 2 分钟内完成，可以再点一次「授权」");
+        throw new Error("授权没有在 5 分钟内完成，请重试");
       } catch (err) {
-        // OAuth routes arrived after the rest of the page: an old host answers 405 and a
-        // bare status is not an answer — say what to do instead.
-        if (hostRouteMissing(err)) {
-          setError("当前宿主还是旧版插件（没有授权接口）：重启 DSH 后再点「授权」。");
-        } else {
-          setError(errText(err));
-        }
+        update("error", { error: hostRouteMissing(err)
+          ? "当前宿主没有授权接口，请更新插件并重启 DSH 后重试。" : errText(err) });
       } finally {
-        setOauthBusy("");
+        if (tab && !navigated) tab.close();
+        if (active()) setOauthBusy("");
       }
     }
 
@@ -1724,7 +1793,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               ? h("button", {
                   type: "button",
                   className: cx("smx-btn", needsOAuth(entry) && "smx-btn--primary"),
-                  disabled: oauthBusy === entry.name,
+                  disabled: oauthBusy !== "",
                   title: needsOAuth(entry) ? "这个服务器要求 OAuth：点这里在浏览器里登录" : "重新走一次 OAuth 授权",
                   onClick: () => authorizeMcp(entry.name),
                 }, oauthBusy === entry.name ? "授权中…" : "授权")
@@ -1816,6 +1885,12 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     });
 
     return h("div", { className: "smx" },
+      oauthFeedback ? h(OAuthFeedback, {
+        flow: oauthFeedback,
+        onClose: () => setOauthFeedback(null),
+        onRetry: () => authorizeMcp(oauthFeedback.name),
+      }) : null,
+      oauthToast ? h(OAuthToast, { message: oauthToast, onClose: closeOAuthToast }) : null,
       h("div", { className: "smx-head" },
         h("span", { className: "smx-count" }, entries
           ? String(entries.length) + " 个服务器 \u00b7 连通 " + okCount + " \u00b7 失败 " + failCount
@@ -2672,6 +2747,15 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-toast { position:absolute; right:16px; bottom:16px; display:flex; align-items:flex-start; gap:10px; max-width:360px; padding:10px 12px; border-radius:10px; border:1px solid var(--dsw-alias-state-error-primary); background:var(--dsw-alias-bg-layer-1); box-shadow:0 8px 28px rgba(0,0,0,.18); pointer-events:auto; }",
     ".smx-toast--checking { border-color:var(--dsw-alias-border-l2); }",
     ".smx-toast--ok { border-color:var(--dsw-alias-state-success-primary); }",
+    ".smx-oauth-card { display:flex; flex-direction:column; align-items:center; gap:12px; padding:28px 20px; text-align:center; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-2); }",
+    ".smx-oauth-card__name { font-size:16px; font-weight:600; color:var(--dsw-alias-label-primary); }",
+    ".smx-oauth-card__stage { font-size:13px; line-height:1.6; color:var(--dsw-alias-label-primary); overflow-wrap:anywhere; }",
+    ".smx-oauth-card__hint { margin:0; max-width:440px; font-size:12px; line-height:1.6; color:var(--dsw-alias-label-secondary); }",
+    ".smx-oauth-spinner { width:32px; height:32px; border:3px solid var(--dsw-alias-border-l2); border-top-color:var(--dsw-alias-brand-primary); border-radius:50%; animation:smx-oauth-spin .8s linear infinite; }",
+    ".smx-oauth-error { width:38px; height:38px; display:grid; place-items:center; border:1px solid currentColor; border-radius:50%; color:var(--dsw-alias-state-error-primary); font-weight:600; }",
+    ".smx-oauth-toast { position:fixed; z-index:100; right:24px; bottom:24px; }",
+    "@keyframes smx-oauth-spin { to { transform:rotate(360deg); } }",
+    "@media (prefers-reduced-motion:reduce) { .smx-oauth-spinner { animation:none; } }",
     ".smx-toast__main { min-width:0; }",
     ".smx-toast__title { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); }",
     ".smx-toast__text { margin-top:4px; font-size:12px; color:var(--dsw-alias-label-secondary); }",

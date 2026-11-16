@@ -302,8 +302,13 @@ const fileF = await put("proj-c", "session-fff", "session.jsonl", Buffer.from(
   if (/banner-dismissed/.test(source)) {
     failed.push("the banner's visibility must not be remembered in the browser");
   }
-  if (/\bpending\b/.test(source)) {
-    failed.push("client.js still relies on `pending`; the host reports `scanning` and `done` now");
+  // Only the historical-audit UI speaks scanning/done; OAuth legitimately uses pending.
+  const auditStart = source.indexOf("  function useLegacyAudit()");
+  const auditEnd = source.indexOf("  // ── Skills panel", auditStart);
+  if (auditStart < 0 || auditEnd <= auditStart) {
+    failed.push("cannot locate the legacy audit UI to validate its status contract");
+  } else if (/\bpending\b/.test(source.slice(auditStart, auditEnd))) {
+    failed.push("legacy audit UI still relies on `pending`; the host reports `scanning` and `done` now");
   }
 }
 
