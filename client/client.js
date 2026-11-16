@@ -1046,7 +1046,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [overflow, setOverflow] = useState(null);
     const [addOpen, setAddOpen] = useState(false);
     const [adding, setAdding] = useState(false);
-    const [draft, setDraft] = useState({ name: "", transport: "stdio", command: "", args: "", url: "", notes: "" });
+    const [draft, setDraft] = useState({ name: "", transport: "stdio", command: "", args: "", url: "", notes: "", skipTrial: false });
     // 导入配置: the pasted text, its host-side parse (servers + errors), and results.
     const [importOpen, setImportOpen] = useState(false);
     const [configText, setConfigText] = useState("");
@@ -1148,6 +1148,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       setError("");
       try {
         const payload = { name: draft.name.trim(), transport: draft.transport, notes: draft.notes.trim() };
+        if (draft.skipTrial === true) payload.skipTrial = true;
         if (draft.transport === "stdio") {
           payload.command = draft.command.trim();
           const parts = draft.args.split(/\s+/).map((part) => part.trim()).filter((part) => part !== "");
@@ -1157,7 +1158,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         }
         const data = await postJson("/skill-mcp-manager/mcp/add", payload);
         setAddOpen(false);
-        setDraft({ name: "", transport: "stdio", command: "", args: "", url: "", notes: "" });
+        setDraft({ name: "", transport: "stdio", command: "", args: "", url: "", notes: "", skipTrial: false });
         setNotice((data.updated ? "已更新 " : "已注册 ") + data.entry.name + "（" + data.toolCount + " 个工具）");
         await refresh();
       } catch (err) {
@@ -1925,6 +1926,14 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               h("span", { className: "smx-form__label" }, "备注"),
               h("input", { value: draft.notes, placeholder: "可选，自己看的",
                 onChange: (event) => setDraft({ ...draft, notes: event.target.value }) }),
+            ),
+            h("label", { className: "smx-form__row" },
+              h("span", { className: "smx-form__label" }, "授权"),
+              h("label", { className: "smx-switchline" },
+                h("input", { type: "checkbox", checked: draft.skipTrial === true,
+                  onChange: (event) => setDraft({ ...draft, skipTrial: event.target.checked }) }),
+                h("span", { className: "smx-switchline__label" }, "跳过连通检测（需要浏览器 OAuth 授权时用；先登记，授权后再检测）"),
+              ),
             ),
             h("div", { className: "smx-form__actions" },
               h("button", { type: "button", className: "smx-btn smx-btn--primary", disabled: adding, onClick: submitAdd }, adding ? "注册中…" : "注册"),

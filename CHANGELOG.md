@@ -6,6 +6,9 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
+- **注册「需要浏览器 OAuth 的服务」不再被拒**：`mcp_register` 与「新增 MCP」多了 `skipTrial`（界面是「授权」一行的勾选：『跳过连通检测』）。勾上就只登记、不试连，条目立刻出现在能力库；401 之类的拒绝留在「检测」结果里，等授权完再点检测即可。
+  - 背景：Ardot 云端 MCP（`https://ardot.tencent.com/mcp`）是 OAuth 保护的（401 + `WWW-Authenticate: Bearer realm=mcpgateway, scope=mcp:use`，`.well-known/oauth-protected-resource/mcp` 指向自身作为授权服务器，支持 authorization_code + PKCE 与动态注册），**试连必然 401**，所以原来的「连不上就不写注册表」把它挡在门外。
+  - 踩坑：给判定式加条件时把 `||` 链写成了逗号表达式（`a || b, c`），整条 `needsTrial` 变成只取最后一个操作数——`mcp-add-smoke` 与 `mcp-config-smoke` 立刻红（「失败的 add 不该动注册表」/「导入的条目应带工具快照」），证明基线真的会抓逻辑错。
 - **MCP 与技能支持拖动排序（用 SortableJS，不手写拖拽）**：技能页 / MCP 页的卡片可以直接按住拖动改顺序，松手即存；顺序存 `order.json`（`{skills:[], mcp:[]}`），刷新、重启都保留。工具栏有「拖动卡片可排序」提示。
   - 拖拽库来自本包自己的依赖 `sortablejs`，由宿主路由 `GET /vendor/sortable` 提供 **ESM 构建**，客户端用**动态 `import()`** 取用（bundle 没有打包器，不能 `require` npm 包）；路由缺失只是没有拖拽，不影响页面。
   - `GET/POST /skill-mcp-manager/order`（单路由按方法分发，符合 webServer 不许两条同 path 的约定）：写前校验 `kind`、数组化、去重；未知名字不落盘。排序是纯展示，**不影响模型看到的目录**。
