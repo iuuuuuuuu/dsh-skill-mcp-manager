@@ -86,6 +86,11 @@ globalThis.fetch = async (url) => {
       skills: [
         { name: "web-search", description: "搜索", path: "/a/web-search/SKILL.md", directory: "/a", provider: "filesystem", modelInvocable: true, userInvocable: true, readonly: false, origin: { kind: "system", key: "system", label: "系统", provider: "filesystem", package: null, runtime: false } },
         { name: "agent-notes", description: "笔记", path: "/b/agent-notes/SKILL.md", directory: "/b", provider: "agent-notes", modelInvocable: true, userInvocable: true, readonly: true, origin: { kind: "plugin", key: "agent-notes", label: "agent-notes", provider: "agent-notes", package: "@acme/agent-notes", runtime: false } },
+        { name: "big-1", description: "一", path: "/c/1/SKILL.md", directory: "/c", provider: "big", modelInvocable: true, userInvocable: true, readonly: true, origin: { kind: "plugin", key: "big", label: "big", provider: "big", package: "@acme/big", runtime: false } },
+        { name: "big-2", description: "二", path: "/c/2/SKILL.md", directory: "/c", provider: "big", modelInvocable: true, userInvocable: true, readonly: true, origin: { kind: "plugin", key: "big", label: "big", provider: "big", package: "@acme/big", runtime: false } },
+        { name: "big-3", description: "三", path: "/c/3/SKILL.md", directory: "/c", provider: "big", modelInvocable: true, userInvocable: true, readonly: true, origin: { kind: "plugin", key: "big", label: "big", provider: "big", package: "@acme/big", runtime: false } },
+        { name: "big-4", description: "四", path: "/c/4/SKILL.md", directory: "/c", provider: "big", modelInvocable: true, userInvocable: true, readonly: true, origin: { kind: "plugin", key: "big", label: "big", provider: "big", package: "@acme/big", runtime: false } },
+        { name: "big-5", description: "五", path: "/c/5/SKILL.md", directory: "/c", provider: "big", modelInvocable: true, userInvocable: true, readonly: true, origin: { kind: "plugin", key: "big", label: "big", provider: "big", package: "@acme/big", runtime: false } },
       ],
     });
   }
@@ -214,11 +219,16 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
   check(findText(tree, "能力库").length > 0, "the panel must render its title (" + tabLabel + " tab)");
   if (tabLabel === "mcp") {
     check(findText(tree, "全部检测").length > 0, "the MCP tab must render its toolbar");
+    check(findText(tree, "新增 MCP").length > 0, "the MCP tab must offer 新增 MCP");
   } else {
     check(findText(tree, "新建分组").length > 0, "the skills tab must render the group tools");
     check(findText(tree, "导入本地技能").length > 0, "the skills tab must render the import button");
     check(findText(tree, "前端").length > 0, "the skills tab must render the custom group");
     check(findText(tree, "插件 · @acme/agent-notes").length > 0, "the skills tab must render the plugin group");
+    // A plugin that ships five skills shows ONE row of cards plus 展开更多.
+    check(findText(tree, "展开更多 5 个").length > 0, "an overflowing plugin group must offer 展开更多, got " + findText(tree, "展开更多").length);
+    check(findText(tree, "big-5").length === 0, "the fifth card must stay out of the page until 展开更多");
+    check(findText(tree, "big-3").length > 0, "the first row of cards stays on the page");
   }
 }
 // 2) the conversation view builds, then builds again with the fetched data —

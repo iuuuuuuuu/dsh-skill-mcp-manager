@@ -55,6 +55,24 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     }, h("span", { className: "smx-switch__knob" }));
   }
 
+  // Plugin-provided groups show ONE row of cards; the rest lives behind 展开更多 in a
+  // modal, so a plugin that brings twenty things cannot push the page into a wall.
+  const PLUGIN_ROW_VISIBLE = 3;
+
+  function OverflowModal({ title, count, onClose, children }) {
+    return h("div", { className: "smx-modal", role: "dialog", "aria-label": title },
+      h("div", { className: "smx-modal__scrim", onClick: onClose }),
+      h("div", { className: "smx-modal__panel" },
+        h("div", { className: "smx-modal__head" },
+          h("span", { className: "smx-modal__title" }, title),
+          h("span", { className: "smx-group__count" }, count + " 个"),
+          h("button", { type: "button", className: "smx-btn", onClick: onClose }, "关闭"),
+        ),
+        h("div", { className: "smx-modal__body" }, children),
+      ),
+    );
+  }
+
   function Badge(props) {
     return h("span", { className: cx("smx-badge", props.tone ? "smx-badge--" + props.tone : "") }, props.children);
   }
@@ -302,6 +320,8 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // not the list the user came for.
     const [openGroups, setOpenGroups] = useState({});
     const [busyGroup, setBusyGroup] = useState("");
+    // Which plugin group is opened in 展开更多 (its key), plus the MCP 新增 form.
+    const [overflow, setOverflow] = useState(null);
     // Workspace selector: project-level skills are keyed by cwd, so the list is
     // re-read whenever the picker changes.
     const [workspace, setWorkspace] = useState("");
@@ -594,8 +614,16 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     });
 
     const loose = (group) => group.skills.filter((skill) => assignedTo[skill.name] === undefined);
+    // Plugin groups keep one row of cards on the page; 展开更多 opens the rest in a modal.
+    const rowOf = (group) => {
+      const items = loose(group);
+      if (group.kind !== "plugin") return items;
+      return items.slice(0, PLUGIN_ROW_VISIBLE);
+    };
     const originSections = originGroups.map((group) => {
-      const unfolded = openGroups[group.key] !== undefined ? openGroups[group.key] : group.kind === "system";
+      // Every group starts expanded; a plugin group then shows one row of cards and
+      // keeps the rest behind 展开更多.
+      const unfolded = openGroups[group.key] !== undefined ? openGroups[group.key] : true;
       const writable = loose(group).filter((skill) => !skill.readonly);
       const enabled = loose(group).filter((skill) => skill.modelInvocable).length;
       return h("section", { key: group.key, className: cx("smx-group", "smx-group--" + group.kind) },
@@ -614,25 +642,34 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               : null,
             group.runtime ? h(Badge, { tone: "muted" }, "运行时生成") : null,
           ),
-          group.kind === "system"
-            ? null
-            : h("span", { className: "smx-group__switch" },
-                h(Switch, {
-                  checked: enabled > 0,
-                  disabled: busyGroup === group.key || writable.length === 0,
-                  onChange: (next) => toggleGroup(group, next),
-                }),
-                h("span", { className: "smx-switchline__label" },
-                  writable.length === 0
-                    ? "随包只读"
-                    : enabled === 0
-                      ? "全部关闭"
-                      : enabled === loose(group).length
-                        ? "全部开启"
-                        : "部分开启"),
-              ),
+          h("span", { className: "smx-group__actions" },
+            group.kind === "plugin" && loose(group).length > PLUGIN_ROW_VISIBLE
+              ? h("button", {
+                  type: "button",
+                  className: "smx-btn smx-btn--ghost",
+                  onClick: () => setOverflow({ title: group.title, items: loose(group), kind: "skills" }),
+                }, "展开更多 " + loose(group).length + " 个")
+              : null,
+            group.kind === "system"
+              ? null
+              : h("span", { className: "smx-group__switch" },
+                  h(Switch, {
+                    checked: enabled > 0,
+                    disabled: busyGroup === group.key || writable.length === 0,
+                    onChange: (next) => toggleGroup(group, next),
+                  }),
+                  h("span", { className: "smx-switchline__label" },
+                    writable.length === 0
+                      ? "随包只读"
+                      : enabled === 0
+                        ? "全部关闭"
+                        : enabled === loose(group).length
+                          ? "全部开启"
+                          : "部分开启"),
+                ),
+          ),
         ),
-        unfolded ? h("div", { className: "smx-cards" }, loose(group).map(skillCard)) : null,
+        unfolded ? h("div", { className: "smx-cards" }, rowOf(group).map(skillCard)) : null,
       );
     });
 
@@ -732,6 +769,12 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       loading ? h(Empty, null, "加载中\u2026")
         : skills && skills.length === 0 ? h(Empty, null, "没有可管理的技能（bundle 型 SKILL.md）")
         : h("div", { className: "smx-groups" }, [...customSections, ...originSections]),
+      // 展开更多: every member of that plugin group, in the same cards.
+      overflow === null ? null : h(OverflowModal, {
+        title: overflow.title,
+        count: overflow.items.length,
+        onClose: () => setOverflow(null),
+      }, h("div", { className: "smx-cards" }, overflow.items.map(skillCard))),
     );
   }
 
@@ -792,6 +835,37 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // a dry run: the list is shown first, killing is a separate confirmation.
     const [orphans, setOrphans] = useState(null);
     const [scanningOrphans, setScanningOrphans] = useState(false);
+    // 展开更多 for plugin groups, and the 新增 form for a brand-new server.
+    const [overflow, setOverflow] = useState(null);
+    const [addOpen, setAddOpen] = useState(false);
+    const [adding, setAdding] = useState(false);
+    const [draft, setDraft] = useState({ name: "", transport: "stdio", command: "", args: "", url: "", notes: "" });
+
+    // 新增: the host validates by trial-connecting; a failure comes back as 400 and is
+    // shown as-is, because the server's own words are what tells the user what to fix.
+    async function submitAdd() {
+      setAdding(true);
+      setError("");
+      try {
+        const payload = { name: draft.name.trim(), transport: draft.transport, notes: draft.notes.trim() };
+        if (draft.transport === "stdio") {
+          payload.command = draft.command.trim();
+          const parts = draft.args.split(/\s+/).map((part) => part.trim()).filter((part) => part !== "");
+          if (parts.length > 0) payload.args = parts;
+        } else {
+          payload.url = draft.url.trim();
+        }
+        const data = await postJson("/skill-mcp-manager/mcp/add", payload);
+        setAddOpen(false);
+        setDraft({ name: "", transport: "stdio", command: "", args: "", url: "", notes: "" });
+        setNotice((data.updated ? "已更新 " : "已注册 ") + data.entry.name + "（" + data.toolCount + " 个工具）");
+        await refresh();
+      } catch (err) {
+        setError(errText(err));
+      } finally {
+        setAdding(false);
+      }
+    }
 
     const refresh = useCallback(async (rv) => {
       setLoading(true);
@@ -1278,7 +1352,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
     const nativeSections = nativeGroups.map((group) => {
-      const unfolded = openGroups[group.key] === true;
+      const unfolded = openGroups[group.key] !== false;
       const enabledCount = group.items.filter((item) => item.enabled).length;
       return h("section", { key: "native-" + group.key, className: "smx-group smx-group--plugin" },
         h("div", { className: "smx-group__head" },
@@ -1292,6 +1366,14 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
             h("span", { className: "smx-group__title" }, "插件 \u00b7 " + group.key),
             h("span", { className: "smx-group__count" }, group.items.length + " 个 \u00b7 启用 " + enabledCount),
           ),
+          h("span", { className: "smx-group__actions" },
+            group.items.length > PLUGIN_ROW_VISIBLE
+              ? h("button", {
+                  type: "button",
+                  className: "smx-btn smx-btn--ghost",
+                  onClick: () => setOverflow({ title: "插件 \u00b7 " + group.key, items: group.items, kind: "mcp" }),
+                }, "展开更多 " + group.items.length + " 个")
+              : null,
           h("span", { className: "smx-group__switch" },
             h(Switch, {
               checked: enabledCount > 0,
@@ -1303,8 +1385,9 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                 ? "全部关闭"
                 : enabledCount === group.items.length ? "全部开启" : "部分开启"),
           ),
+          ),
         ),
-        unfolded ? h("div", { className: "smx-cards" }, group.items.map(nativeCard)) : null,
+        unfolded ? h("div", { className: "smx-cards" }, group.items.slice(0, PLUGIN_ROW_VISIBLE).map(nativeCard)) : null,
       );
     });
 
@@ -1317,6 +1400,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
             + (nativeEntries.length > 0 ? " \u00b7 插件 MCP " + nativeEntries.length : "")
           : ""),
         h("div", { className: "smx-head__meta" },
+          h("button", { type: "button", className: "smx-btn smx-btn--primary", onClick: () => setAddOpen(true) }, "新增 MCP"),
           h("button", {
             type: "button",
             className: "smx-btn smx-btn--primary",
@@ -1436,6 +1520,61 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
             ),
           )
         : null,
+      // 展开更多 for a plugin group, and the 新增 form.
+      overflow === null ? null : h(OverflowModal, {
+        title: overflow.title,
+        count: overflow.items.length,
+        onClose: () => setOverflow(null),
+      }, h("div", { className: "smx-cards" }, overflow.items.map(nativeCard))),
+      addOpen ? h("div", { className: "smx-drawer", role: "dialog", "aria-label": "新增 MCP" },
+        h("div", { className: "smx-drawer__scrim", onClick: () => setAddOpen(false) }),
+        h("div", { className: "smx-drawer__panel" },
+          h("div", { className: "smx-drawer__head" },
+            h("span", { className: "smx-drawer__title" }, "新增 MCP 服务器"),
+            h("button", { type: "button", className: "smx-btn", onClick: () => setAddOpen(false) }, "关闭"),
+          ),
+          h("div", { className: "smx-detail" },
+            h("label", { className: "smx-setting__row" },
+              h("span", { className: "smx-setting__label" }, "名称（[A-Za-z0-9_-]{1,32}）"),
+              h("input", { className: "smx-input", value: draft.name, placeholder: "my-server",
+                onChange: (event) => setDraft({ ...draft, name: event.target.value }) }),
+            ),
+            h("label", { className: "smx-setting__row" },
+              h("span", { className: "smx-setting__label" }, "传输"),
+              h("select", { className: "smx-input", value: draft.transport,
+                onChange: (event) => setDraft({ ...draft, transport: event.target.value }) },
+                h("option", { value: "stdio" }, "stdio（本地命令）"),
+                h("option", { value: "streamable-http" }, "streamable-http（URL）"),
+              ),
+            ),
+            draft.transport === "stdio" ? h("label", { className: "smx-setting__row" },
+              h("span", { className: "smx-setting__label" }, "命令"),
+              h("input", { className: "smx-input", value: draft.command, placeholder: "npx",
+                onChange: (event) => setDraft({ ...draft, command: event.target.value }) }),
+            ) : null,
+            draft.transport === "stdio" ? h("label", { className: "smx-setting__row" },
+              h("span", { className: "smx-setting__label" }, "参数（空格分隔）"),
+              h("input", { className: "smx-input", value: draft.args, placeholder: "-y @scope/server",
+                onChange: (event) => setDraft({ ...draft, args: event.target.value }) }),
+            ) : null,
+            draft.transport === "streamable-http" ? h("label", { className: "smx-setting__row" },
+              h("span", { className: "smx-setting__label" }, "URL"),
+              h("input", { className: "smx-input", value: draft.url, placeholder: "https://example.com/mcp",
+                onChange: (event) => setDraft({ ...draft, url: event.target.value }) }),
+            ) : null,
+            h("label", { className: "smx-setting__row" },
+              h("span", { className: "smx-setting__label" }, "备注（可选）"),
+              h("input", { className: "smx-input", value: draft.notes,
+                onChange: (event) => setDraft({ ...draft, notes: event.target.value }) }),
+            ),
+            h("div", { className: "smx-detail__actions" },
+              h("button", { type: "button", className: "smx-btn smx-btn--primary", disabled: adding, onClick: submitAdd }, adding ? "注册中…" : "注册"),
+              h("button", { type: "button", className: "smx-btn", onClick: () => setAddOpen(false) }, "取消"),
+            ),
+            h("span", { className: "smx-count" }, "注册前会真连一次、拉工具清单；连不上就不写进注册表。"),
+          ),
+        ),
+      ) : null,
     );
   }
 
@@ -2050,6 +2189,13 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     // actions, and the sheet is a self-contained panel above the grid.
     ".smx-group--custom .smx-group__title { font-weight:600; }",
     ".smx-group__actions { display:flex; align-items:center; gap:4px; flex:none; }",
+    // 展开更多 — the whole plugin group in one scrollable panel over the page.
+    ".smx-modal { position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center; padding:24px; }",
+    ".smx-modal__scrim { position:absolute; inset:0; background:rgba(15,23,42,.38); }",
+    ".smx-modal__panel { position:relative; display:flex; flex-direction:column; gap:12px; width:min(880px,100%); max-height:min(80vh,720px); padding:16px; border-radius:16px; background:var(--dsw-alias-bg-layer-1); border:1px solid var(--dsw-alias-border-l1); box-shadow:0 20px 60px rgba(15,23,42,.24); }",
+    ".smx-modal__head { display:flex; align-items:center; gap:8px; }",
+    ".smx-modal__title { flex:1; min-width:0; font-size:14px; font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-modal__body { min-height:0; overflow:auto; }",
     ".smx-head__inline { display:flex; align-items:center; gap:6px; flex:none; }",
     ".smx-input--inline { font-size:12px; padding:2px 6px; min-width:120px; }",
     ".smx-select--inline { flex:none; font-size:11px; padding:3px 6px; max-width:120px; }",

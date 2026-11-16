@@ -6,6 +6,11 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
+- **能力库：MCP 新增入口**：MCP 页头部多了「新增 MCP」，右侧抽屉填名称 / 传输（stdio 命令 + 参数，或 streamable-http URL）/ 备注即可注册。
+  - 宿主新增 `POST /mcp/add` → `addMcp()`，与 `mcp_register` 工具**共用同一个 `registerServerEntry()`**：**注册前真连一次 + 拉工具清单**，连不上就 400 且不写注册表；重名即更新；UI 是人点的，所以不弹「本地命令审批」（那道门是防模型的）。
+  - 测试：新增 `test/mcp-add-smoke.mjs`（真 stdio fixture：注册成功并落盘、重名更新不产生重复、连不上 400 且注册表不变、非法名字/缺传输/缺 URL/缺命令全部拒绝），已加入发布基线。
+- **能力库：插件组默认展开，只显示一行卡片，多的进「展开更多」弹窗**：技能页与 MCP 页的插件组（含「未归属插件」）默认展开，正文只放**一行卡片**（`PLUGIN_ROW_VISIBLE = 3`），组头出现「展开更多 N 个」→ 居中弹窗（`.smx-modal`）里仍是同一套卡片、可滚动；组本身仍可折叠。系统组 / 自定义分组不受影响。
+  - 真机判读：MCP 页 `插件 · @simular/dsh-box 4 个 · 启用 2` 显示 3 张卡片 + 「展开更多 4 个」，弹窗里 4 张；技能页 `插件 · @simular/dsh-big 5 个` 显示 3 张 + 「展开更多 5 个」；两页 0 console 异常。
 - **插件注入的 MCP 行没有描述时，卡片写明是谁注入的**：`由 <插件名> 注入 · 服务器未自报描述`（没有归属时 `由 未归属插件 注入 · …`）。原来留空，看起来像坏掉；loader 行在连接前确实没有 `serverDescription`，所以说的只是事实，不是功能简介。
   - 测试：`session-caps-smoke` 断言插件行带上这句话、注册表行仍用服务器自报描述。真机判读：`box` 显示「由 @simular/dsh-box 注入 · 服务器未自报描述」，`mystery` 显示「由 未归属插件 注入 · …」，0 console 异常。
 - **修：能力管理里 MCP / 技能卡片没有描述**：两个原因叠在一起 ——
