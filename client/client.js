@@ -61,6 +61,111 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
 
   // One overlay for the whole library page: 展开更多, 详情, 新增 MCP, 导入, 残留进程 and
   // 高级设置 all open here — nothing is laid out inline on the page.
+  // A minimal mirror of lib/mcp-config.js. The desktop shell can reload this bundle
+  // WITHOUT restarting the host (AGENTS: 新客户端 + 旧宿主), and an older host has no
+  // /mcp/config routes — so the modal must still format and check what was pasted.
+  // Keep this in sync with the host parser: same wrappers, same repairs, same rules.
+  const LOCAL_TRANSPORTS = { http: "streamable-http", https: "streamable-http", "streamable-http": "streamable-http", streamableHttp: "streamable-http", streamable_http: "streamable-http", stdio: "stdio" };
+  const LOCAL_WRAPPERS = ["servers", "mcpServers", "mcp_servers"];
+  const LOCAL_NAME_RE = /^[A-Za-z0-9_-]{1,32}$/;
+
+  function localDropTrailingCommas(text) {
+    return text.replace(/,\s*([}\]])/g, "$1");
+  }
+
+  function localCandidates(text) {
+    const trimmed = text.trim();
+    const wrapped = "{" + trimmed + "}";
+    return [trimmed, localDropTrailingCommas(trimmed), wrapped, localDropTrailingCommas(wrapped)];
+  }
+
+  function localLiftInlineName(document) {
+    if (document === null || typeof document !== "object" || Array.isArray(document)) return null;
+    const keys = Object.keys(document);
+    if (!keys.includes("name")) return null;
+    if (!keys.some((key) => ["url", "command", "type", "transport"].includes(key))) return null;
+    if (typeof document.name !== "string" || document.name === "") return null;
+    const body = {};
+    for (const key of keys) if (key !== "name") body[key] = document[key];
+    const map = {};
+    map[document.name] = body;
+    return map;
+  }
+
+  function localParseMcpConfig(text) {
+    const errors = [];
+    const servers = [];
+    if (typeof text !== "string" || text.trim() === "") {
+      return { servers, errors: [{ path: "", message: "粘贴的配置是空的" }], formatted: text, repaired: false };
+    }
+    let document;
+    let lastError = null;
+    for (const candidate of localCandidates(text)) {
+      try {
+        document = JSON.parse(candidate);
+        lastError = null;
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (lastError !== null) {
+      return { servers, errors: [{ path: "", message: "不是合法 JSON：" + lastError.message }], formatted: text, repaired: false };
+    }
+    const lifted = localLiftInlineName(document);
+    if (lifted !== null) document = lifted;
+    if (document === null || typeof document !== "object" || Array.isArray(document)) {
+      return { servers, errors: [{ path: "", message: "顶层必须是一个对象" }], formatted: text, repaired: false };
+    }
+    let basePath = "";
+    let map = document;
+    for (const key of LOCAL_WRAPPERS) {
+      if (document[key] !== undefined) { basePath = key; map = document[key]; break; }
+    }
+    if (map === null || typeof map !== "object" || Array.isArray(map)) {
+      return { servers, errors: [{ path: basePath, message: "必须是一个对象（名字 → 配置）" }], formatted: text, repaired: false };
+    }
+    for (const name of Object.keys(map)) {
+      const raw = map[name];
+      const path = basePath === "" ? name : basePath + "." + name;
+      if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+        errors.push({ path, message: "必须是一个对象" });
+        continue;
+      }
+      if (!LOCAL_NAME_RE.test(name)) {
+        errors.push({ path, message: "名字只能用 [A-Za-z0-9_-]，1-32 个字符" });
+        continue;
+      }
+      const declaredRaw = raw.type !== undefined ? raw.type : raw.transport;
+      const declared = declaredRaw === undefined ? undefined : LOCAL_TRANSPORTS[String(declaredRaw).trim()];
+      if (declaredRaw !== undefined && declared === undefined) {
+        errors.push({ path: path + ".type", message: "不支持的传输 " + JSON.stringify(declaredRaw) + "（只认 http / streamable-http / stdio）" });
+        continue;
+      }
+      const hasUrl = typeof raw.url === "string" && raw.url !== "";
+      const hasCommand = typeof raw.command === "string" && raw.command !== "";
+      const transport = declared !== undefined ? declared : hasUrl ? "streamable-http" : hasCommand ? "stdio" : undefined;
+      if (transport === undefined) {
+        errors.push({ path, message: "缺少 url 或 command——看不出这是远程服务器还是本地命令" });
+        continue;
+      }
+      const entry = { name, transport };
+      if (transport === "streamable-http") {
+        if (!hasUrl) { errors.push({ path: path + ".url", message: "streamable-http 必须给 url" }); continue; }
+        entry.url = raw.url;
+      } else {
+        if (!hasCommand) { errors.push({ path: path + ".command", message: "stdio 必须给 command" }); continue; }
+        entry.command = raw.command;
+        if (Array.isArray(raw.args) && raw.args.every((item) => typeof item === "string")) entry.args = raw.args;
+      }
+      if (typeof raw.notes === "string" && raw.notes !== "") entry.notes = raw.notes;
+      servers.push(entry);
+    }
+    if (servers.length === 0 && errors.length === 0) errors.push({ path: basePath, message: "里面没有任何服务器" });
+    const repairedDocument = lifted !== null ? lifted : document;
+    return { servers, errors, formatted: JSON.stringify(repairedDocument, null, 2), repaired: true };
+  }
+
   function Modal({ title, count, onClose, children }) {
     return h("div", { className: "smx-modal", role: "dialog", "aria-label": title },
       h("div", { className: "smx-modal__scrim", onClick: onClose }),
@@ -848,6 +953,9 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [configPreview, setConfigPreview] = useState(null);
     const [importing, setImporting] = useState(false);
     const [importResults, setImportResults] = useState(null);
+    // Set when the host has no /mcp/config routes yet (an older plugin build): the modal
+    // then formats and checks locally, and imports server by server through /mcp/add.
+    const [configDegraded, setConfigDegraded] = useState(false);
 
     // 新增: the host validates by trial-connecting; a failure comes back as 400 and is
     // shown as-is, because the server's own words are what tells the user what to fix.
@@ -862,17 +970,29 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
 
+    // A host without this route answers 405, or the SPA HTML: fall back to the local
+    // mirror and say so, instead of showing the user a bare HTTP 405.
+    function hostRouteMissing(error) {
+      const message = errText(error);
+      return /HTTP 40[45]/.test(message) || /HTTP 5[0-9][0-9]/.test(message) || /Unexpected token/.test(message);
+    }
+
     async function previewConfig(text) {
       setImportResults(null);
       try {
         const data = await postJson("/skill-mcp-manager/mcp/config/parse", { text });
-        // A pasted pair is repaired by the host; put the repaired document back in
-        // the box, so what gets imported is exactly what the user can read.
+        setConfigPreview(data);
         if (typeof data.formatted === "string" && data.formatted.trim() !== "" && data.formatted !== text) {
           setConfigText(data.formatted);
         }
-        setConfigPreview(data);
       } catch (err) {
+        if (hostRouteMissing(err)) {
+          setConfigDegraded(true);
+          const local = localParseMcpConfig(text);
+          setConfigPreview(local);
+          if (typeof local.formatted === "string" && local.formatted.trim() !== "" && local.formatted !== text) setConfigText(local.formatted);
+          return;
+        }
         setConfigPreview({ servers: [], errors: [{ path: "", message: errText(err) }] });
       }
     }
@@ -881,7 +1001,36 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       setImporting(true);
       setError("");
       try {
-        const data = await postJson("/skill-mcp-manager/mcp/config/import", { text: configText });
+        let data;
+        try {
+          data = await postJson("/skill-mcp-manager/mcp/config/import", { text: configText });
+        } catch (err) {
+          if (!hostRouteMissing(err)) throw err;
+          // Older host: no batch route. Register the parsed entries one at a time
+          // through the single-server route, so the feature still works after a
+          // client-only reload; if even that is missing the message says so.
+          setConfigDegraded(true);
+          const local = localParseMcpConfig(configText);
+          const results = [];
+          for (const entry of local.servers) {
+            try {
+              const single = await postJson("/skill-mcp-manager/mcp/add", entry);
+              results.push({ name: entry.name, ok: true, updated: single.updated === true, toolCount: single.toolCount });
+            } catch (singleError) {
+              if (hostRouteMissing(singleError)) {
+                throw new Error("当前宿主的插件版本还没有导入接口（需要升级插件并重启 DSH）；配置已在本地校验：可用 "
+                  + local.servers.length + " 个，问题 " + local.errors.length + " 处。");
+              }
+              results.push({ name: entry.name, ok: false, error: errText(singleError) });
+            }
+          }
+          data = {
+            errors: local.errors,
+            results,
+            imported: results.filter((item) => item.ok).length,
+            failed: results.filter((item) => !item.ok).length,
+          };
+        }
         setImportResults(data);
         setNotice("导入完成：成功 " + data.imported + " 个" + (data.failed > 0 ? "，失败 " + data.failed + " 个" : ""));
         await refresh();
@@ -1647,6 +1796,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
             h("button", { type: "button", className: "smx-btn", onClick: () => { setConfigText(""); setConfigPreview(null); setImportResults(null); } }, "清空"),
             h("span", { className: "smx-count" }, "支持 {\"servers\": {…}}、{\"mcpServers\": {…}} 或直接是名字表；http 与 stdio 都认"),
           ),
+          configDegraded ? h(Notice, { kind: "error" }, "当前宿主还是旧版插件（没有导入接口）：格式化与校验在本地完成，导入请升级插件并重启后再试。") : null,
           configPreview === null ? null : h("div", { className: "smx-form__result" },
             (configPreview.errors || []).length === 0
               ? h(Notice, { kind: "success" }, "可以导入 " + configPreview.servers.length + " 个服务器")
