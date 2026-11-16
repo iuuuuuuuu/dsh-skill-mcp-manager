@@ -6,6 +6,8 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
+- **修：/vendor/sortable 被注册了两次，之后所有路由都没生效**（真机：点授权 405、POST /mcp/add 405，而 /mcp、/order 正常）。真实 webServer.register 对重复 (kind, path) 抛错，那行遗留的 route(GET, /vendor/sortable) 是在改成 raw 注册后忘了删的 —— mountUi 在它那里中断，后面声明的 OAuth / add / delete / test / load / settings / session-caps / session-audit 全部没注册，而且没有明显报错。
+  - 测试侧的真问题：ui-smoke 的 webServer 桩只 routes.push，不模拟重复拒绝，所以这类「静默吞掉后半段路由」永远是绿的（假绿）。现在桩对重复抛错，并断言 oauth/start、oauth/status、mcp/add、order、vendor/sortable 都必须注册、路由表不允许重复 path。故障注入：把重复行加回去 ui-smoke 立刻红，删掉恢复绿。
 - **修：点「授权」只看到 `405`**：宿主还停在旧版插件（OAuth 路由是后加的），客户端现在把 404/405 翻成「当前宿主还是旧版插件（没有授权接口）：重启 DSH 后再点「授权」」，不再甩状态码。
 - **插件自己走完 OAuth**（`lib/oauth.js` + `POST /oauth/start` / `GET /oauth/status`）：MCP 卡片上多一个「授权」按钮（streamable-http 才有；上次检测是 401 时会高亮），点了之后 ——
   - 宿主按 MCP 授权规范**自动发现**：`401` 的 `WWW-Authenticate: resource_metadata` → `/.well-known/oauth-protected-resource` → `/.well-known/oauth-authorization-server`（Ardot 实测：issuer/authorize/token/register 全部解析出来，scope `mcp:use`）；

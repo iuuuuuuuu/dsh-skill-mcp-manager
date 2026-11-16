@@ -84,6 +84,9 @@ const ctx = {
     if (name === "webServer") {
       return {
         register(route) {
+          if (routes.some((existing) => existing.path === route.path && existing.kind === route.kind)) {
+            throw new Error("duplicate route registration: " + route.path);
+          }
           routes.push(route);
           return () => {};
         },
@@ -141,6 +144,18 @@ const routeByPath = (path) => routes.find((route) => route.path === path);
 
 console.log("tools:", tools.map((t) => t.name).join(", "));
 console.log("commands:", commands.map((c) => c.name).join(", "));
+  // Every route the UI now depends on must be registered: a leftover duplicate used to
+  // make mountUi throw and silently swallow every route declared after it (真机 405).
+  for (const required of [
+    "/skill-mcp-manager/oauth/start",
+    "/skill-mcp-manager/oauth/status",
+    "/skill-mcp-manager/mcp/add",
+    "/skill-mcp-manager/order",
+    "/skill-mcp-manager/vendor/sortable",
+  ]) {
+    if (!routes.some((route) => route.path === required)) failed.push("route must be registered: " + required);
+  }
+  if (routes.length !== new Set(routes.map((route) => route.path)).size) failed.push("no route may be registered twice");
 console.log("routes:", routes.map((r) => r.path).join(", "));
 
 const failed = [];
