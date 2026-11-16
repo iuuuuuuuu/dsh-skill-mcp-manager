@@ -28,11 +28,18 @@ jobs:
       - name: Check syntax
         run: |
           node --check lib/index.js
+          node --check lib/mcp-config.js
           node --check lib/mcp-result.js
-          node --check lib/stdio-transport.js
-          node --check lib/child-env.js
+          node --check lib/oauth.js
+          node --check lib/orphans.js
+          node --check lib/session-audit.js
           node --check lib/skill.js
+          node --check lib/skill-groups.js
+          node --check lib/skills-import.js
+          node --check lib/stdio-transport.js
           node --check lib/ui.js
+          node --check lib/workspace-mcp.js
+          node --check lib/child-env.js
           node --check client/client.js
 
       - name: Run tests
@@ -50,6 +57,20 @@ jobs:
           node test/mcp-call-guard-smoke.mjs
           node test/mcp-result-smoke.mjs
           node test/mcp-load-schema-smoke.mjs
+          node test/mcp-check-smoke.mjs
+          node test/mcp-add-smoke.mjs
+          node test/mcp-config-smoke.mjs
+          node test/order-smoke.mjs
+          node test/oauth-smoke.mjs
+          node test/client-slots-smoke.mjs
+          node test/client-render-smoke.mjs
+          node test/skill-group-smoke.mjs
+          node test/skills-import-smoke.mjs
+          node test/skill-route-smoke.mjs
+          node test/workspace-mcp-smoke.mjs
+          node test/mcp-native-smoke.mjs
+          node test/orphan-cleanup-smoke.mjs
+          node test/session-caps-smoke.mjs
           node test/session-audit-smoke.mjs
           node test/security-smoke.mjs
           node test/stdio-transport-smoke.mjs

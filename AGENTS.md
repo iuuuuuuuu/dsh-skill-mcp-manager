@@ -117,11 +117,18 @@ pnpm install --config.auto-install-peers=true
 
 # 语法检查
 node --check lib/index.js
+node --check lib/mcp-config.js
 node --check lib/mcp-result.js
-node --check lib/stdio-transport.js
-node --check lib/child-env.js
+node --check lib/oauth.js
+node --check lib/orphans.js
+node --check lib/session-audit.js
 node --check lib/skill.js
+node --check lib/skill-groups.js
+node --check lib/skills-import.js
+node --check lib/stdio-transport.js
 node --check lib/ui.js
+node --check lib/workspace-mcp.js
+node --check lib/child-env.js
 node --check client/client.js
 
 # 测试基线（全绿）
