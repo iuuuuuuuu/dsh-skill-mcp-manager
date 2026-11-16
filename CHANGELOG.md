@@ -6,6 +6,9 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Fixed
 
+- **修：升级前已创建的子代理仍然全关**：旧版 `{mcp:[],skills:[],seeded:true}` 会在继承初始化前提前返回。现在识别真实 subagent 的未标记空策略并迁移到父链；手动编辑保存 `explicit:true`，重载时保留，明确全关或已有自定义允许项不被迁移。旧数据没有“自动/手动”的区分，历史未标记空策略按自动全关处理。
+  - 使用用户所报四个既有 teammate 的真实 SessionHeader 与策略副本验证：四个通过实际 mcp_load peek 权限边界，一个完成 Ardot 真实鉴权 initialize/tools/list；不更改真实会话和设计内容。新增旧策略回归先红后绿。
+
 - **子代理默认继承父对话的 MCP / 技能开关**：仅根据宿主 `session.header.origin === "subagent"` 与 `parentSession` 建立 `inheritFrom`，不误认普通对话 fork。spawn、fork、多层委派、并发兄弟代理均支持；继承关系写入 `session-caps.json`，每次调用读取父策略，重载后仍有效。
 - **父对话关掉能力时同步撤销子代理权限**：桥调用、原生 MCP 调用和技能加载守卫实时拒绝；已运行的子代理 MCP 连接立即关闭、eager 注册撤销。子代理下一次 pre-step 重新协调目录与技能影子。保留的旧 eager execute 也在调用边界再次检查会话策略。只继承策略，MCP 实例仍逐代理独立。
 - **显式子策略与异常兜底**：用户在子代理能力管理手动修改时，先快照继承的 MCP 与技能两份列表，再独立修改，空列表也是明确选择；缺失父策略或循环关系默认关闭。并发写策略序列化，避免共用临时文件冲突。

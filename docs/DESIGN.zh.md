@@ -566,3 +566,7 @@ sessionEntry 统一解析父链，目录、mcp_load/mcp_call、技能影子与 t
 ### 并发与隔离
 
 session-caps 写入排队，防并发创建/开关重用同一 tmp 文件导致 rename 冲突。只继承允许项，不复用 liveSessions 或连接；实测父/子/孙各有独立 stdio PID。未执行的调用在守卫或桥/原生 execute 上拒绝；已在途调用不强制中断。普通新会话、普通会话 fork、其它工作区不会因此获得授权。
+
+### 旧子代理的升级迁移
+
+已存在的子代理可能在旧版首次 pre-step 时被自动写入 seeded:true 的空允许项。初始化必须在 seeded 早退前检查真实 lineage；未显式标记、未继承且两类列表均空的子代理迁移为 inheritFrom。新 UI 修改写 explicit:true，loader 保留；即使选择全关也不会再被视作旧自动策略。已有自定义非空项不改。由于旧格式未记录来源，历史未标记手动全关与自动全关无法区分，迁移采用空子策略继承父项规则；顶层会话及普通 fork 不受影响。

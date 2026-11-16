@@ -193,6 +193,14 @@ const catalogText = (decision) => (decision.messages ?? []).map((m) => m.content
 // the workspace declares one MCP server of its own
 await mkdir(currentWorkspace, { recursive: true });
 await writeFile(join(currentWorkspace, ".mcp.json"), JSON.stringify({ mcpServers: { "ws-server": { command: "node", args: ["ws.js"] } } }, null, 2), "utf8");
+// Upgrade fixture: old versions auto-seeded child sessions as closed, without
+// recording whether a person explicitly changed the switches.
+await writeFile(join(dataDir, "session-caps.json"), JSON.stringify({
+  "legacy-parent": { mcp: ["alpha", "sequential"], skills: ["skill-one"], seeded: true },
+  "legacy-child": { mcp: [], skills: [], seeded: true },
+  "legacy-explicit": { mcp: [], skills: [], seeded: true, explicit: true },
+  "legacy-custom": { mcp: ["sequential"], skills: [], seeded: true },
+}), "utf8");
 await apply(ctx, { dataDir, profile: "__test__", importNativeMcp: false });
 await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -506,6 +514,31 @@ const agent = makeAgent("sess-1");
   await preStep(unrelated);
   check(!(await caps("GET", { session: unrelated.session.id })).body.mcp.some((x) => x.enabled), "ordinary session forks must not inherit subagent permissions just because they have parentSession");
   console.log("subagent inheritance: spawn, fork, nested, live revocation, explicit override and isolation checked");
+}
+
+// Existing pre-upgrade children must not stay closed just because seeded=true.
+{
+  for (const id of ["legacy-child", "legacy-explicit", "legacy-custom"]) {
+    const child = makeAgent(id);
+    child.session.header = { id, parentSession: "legacy-parent", origin: "subagent", isSeeded: false };
+    const decision = await preStep(child);
+    const state = (await caps("GET", { session: id })).body;
+    check(state.mcp.find((x) => x.name === "alpha")?.enabled === (id === "legacy-child"),
+      "upgrade must migrate old empty auto-policy, but preserve explicit/custom child: " + id);
+    if (id === "legacy-child") {
+      check(catalogText(decision).includes("alpha"), "migrated child's actual catalog must inherit");
+      check(await child.guards[0]({ name: "skill", arguments: { name: "skill-one" } }, async () => "allow") === "allow",
+        "migrated child's skill guard must inherit");
+    }
+  }
+  const saved = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
+  check(saved["legacy-child"].inheritFrom === "legacy-parent", "legacy migration must persist parent relationship");
+  check(saved["legacy-explicit"].explicit === true && !saved["legacy-explicit"].inheritFrom,
+    "explicit empty policy marker must survive loading and migration");
+  await caps("POST", { session: "legacy-child", kind: "skills", name: "skill-one", enabled: false });
+  const detached = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
+  check(detached["legacy-child"].explicit === true, "manual edits must mark even an empty child choice explicit");
+  console.log("legacy children: seeded empty migrated; explicit empty and custom grants preserved");
 }
 
 // 7c) a pin scopes a registry entry to one workspace
