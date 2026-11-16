@@ -6,6 +6,7 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
+- **修：点「授权」只看到 `405`**：宿主还停在旧版插件（OAuth 路由是后加的），客户端现在把 404/405 翻成「当前宿主还是旧版插件（没有授权接口）：重启 DSH 后再点「授权」」，不再甩状态码。
 - **插件自己走完 OAuth**（`lib/oauth.js` + `POST /oauth/start` / `GET /oauth/status`）：MCP 卡片上多一个「授权」按钮（streamable-http 才有；上次检测是 401 时会高亮），点了之后 ——
   - 宿主按 MCP 授权规范**自动发现**：`401` 的 `WWW-Authenticate: resource_metadata` → `/.well-known/oauth-protected-resource` → `/.well-known/oauth-authorization-server`（Ardot 实测：issuer/authorize/token/register 全部解析出来，scope `mcp:use`）；
   - **动态注册**一个 public client（`token_endpoint_auth_method: none`、PKCE `S256`、回调 `http://127.0.0.1:<临时端口>/callback`，端口由系统分配，注册时带上去），再返回授权 URL；
