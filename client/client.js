@@ -842,9 +842,51 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [addOpen, setAddOpen] = useState(false);
     const [adding, setAdding] = useState(false);
     const [draft, setDraft] = useState({ name: "", transport: "stdio", command: "", args: "", url: "", notes: "" });
+    // 导入配置: the pasted text, its host-side parse (servers + errors), and results.
+    const [importOpen, setImportOpen] = useState(false);
+    const [configText, setConfigText] = useState("");
+    const [configPreview, setConfigPreview] = useState(null);
+    const [importing, setImporting] = useState(false);
+    const [importResults, setImportResults] = useState(null);
 
     // 新增: the host validates by trial-connecting; a failure comes back as 400 and is
     // shown as-is, because the server's own words are what tells the user what to fix.
+    // Paste → pretty-print immediately (local, no roundtrip), then let the host parse:
+    // the preview the user reads and the servers that get registered come from one
+    // parser, so a line the preview accepts cannot be rejected by the import later.
+    function formatJson(text) {
+      try {
+        return JSON.stringify(JSON.parse(text), null, 2);
+      } catch {
+        return text;
+      }
+    }
+
+    async function previewConfig(text) {
+      setImportResults(null);
+      try {
+        const data = await postJson("/skill-mcp-manager/mcp/config/parse", { text });
+        setConfigPreview(data);
+      } catch (err) {
+        setConfigPreview({ servers: [], errors: [{ path: "", message: errText(err) }] });
+      }
+    }
+
+    async function runImportConfig() {
+      setImporting(true);
+      setError("");
+      try {
+        const data = await postJson("/skill-mcp-manager/mcp/config/import", { text: configText });
+        setImportResults(data);
+        setNotice("导入完成：成功 " + data.imported + " 个" + (data.failed > 0 ? "，失败 " + data.failed + " 个" : ""));
+        await refresh();
+      } catch (err) {
+        setError(errText(err));
+      } finally {
+        setImporting(false);
+      }
+    }
+
     async function submitAdd() {
       setAdding(true);
       setError("");
@@ -1403,6 +1445,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
           : ""),
         h("div", { className: "smx-head__meta" },
           h("button", { type: "button", className: "smx-btn smx-btn--primary", onClick: () => setAddOpen(true) }, "新增 MCP"),
+          h("button", { type: "button", className: "smx-btn", onClick: () => setImportOpen(true) }, "导入配置"),
           h("button", {
             type: "button",
             className: "smx-btn smx-btn--primary",
@@ -1526,46 +1569,108 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
             h("span", { className: "smx-drawer__title" }, "新增 MCP 服务器"),
             h("button", { type: "button", className: "smx-btn", onClick: () => setAddOpen(false) }, "关闭"),
           ),
-          h("div", { className: "smx-detail" },
-            h("label", { className: "smx-setting__row" },
-              h("span", { className: "smx-setting__label" }, "名称（[A-Za-z0-9_-]{1,32}）"),
-              h("input", { className: "smx-input", value: draft.name, placeholder: "my-server",
+          h("div", { className: "smx-form" },
+            h("label", { className: "smx-form__row" },
+              h("span", { className: "smx-form__label" }, "名称"),
+              h("input", { value: draft.name, placeholder: "my-server（[A-Za-z0-9_-]{1,32}）",
                 onChange: (event) => setDraft({ ...draft, name: event.target.value }) }),
             ),
-            h("label", { className: "smx-setting__row" },
-              h("span", { className: "smx-setting__label" }, "传输"),
-              h("select", { className: "smx-input", value: draft.transport,
+            h("label", { className: "smx-form__row" },
+              h("span", { className: "smx-form__label" }, "传输"),
+              h("select", { value: draft.transport,
                 onChange: (event) => setDraft({ ...draft, transport: event.target.value }) },
                 h("option", { value: "stdio" }, "stdio（本地命令）"),
                 h("option", { value: "streamable-http" }, "streamable-http（URL）"),
               ),
             ),
-            draft.transport === "stdio" ? h("label", { className: "smx-setting__row" },
-              h("span", { className: "smx-setting__label" }, "命令"),
-              h("input", { className: "smx-input", value: draft.command, placeholder: "npx",
+            draft.transport === "stdio" ? h("label", { className: "smx-form__row" },
+              h("span", { className: "smx-form__label" }, "命令"),
+              h("input", { value: draft.command, placeholder: "npx",
                 onChange: (event) => setDraft({ ...draft, command: event.target.value }) }),
             ) : null,
-            draft.transport === "stdio" ? h("label", { className: "smx-setting__row" },
-              h("span", { className: "smx-setting__label" }, "参数（空格分隔）"),
-              h("input", { className: "smx-input", value: draft.args, placeholder: "-y @scope/server",
+            draft.transport === "stdio" ? h("label", { className: "smx-form__row" },
+              h("span", { className: "smx-form__label" }, "参数"),
+              h("input", { value: draft.args, placeholder: "-y @scope/server（空格分隔）",
                 onChange: (event) => setDraft({ ...draft, args: event.target.value }) }),
             ) : null,
-            draft.transport === "streamable-http" ? h("label", { className: "smx-setting__row" },
-              h("span", { className: "smx-setting__label" }, "URL"),
-              h("input", { className: "smx-input", value: draft.url, placeholder: "https://example.com/mcp",
+            draft.transport === "streamable-http" ? h("label", { className: "smx-form__row" },
+              h("span", { className: "smx-form__label" }, "URL"),
+              h("input", { value: draft.url, placeholder: "https://example.com/mcp",
                 onChange: (event) => setDraft({ ...draft, url: event.target.value }) }),
             ) : null,
-            h("label", { className: "smx-setting__row" },
-              h("span", { className: "smx-setting__label" }, "备注（可选）"),
-              h("input", { className: "smx-input", value: draft.notes,
+            h("label", { className: "smx-form__row" },
+              h("span", { className: "smx-form__label" }, "备注"),
+              h("input", { value: draft.notes, placeholder: "可选，自己看的",
                 onChange: (event) => setDraft({ ...draft, notes: event.target.value }) }),
             ),
-            h("div", { className: "smx-detail__actions" },
+            h("div", { className: "smx-form__actions" },
               h("button", { type: "button", className: "smx-btn smx-btn--primary", disabled: adding, onClick: submitAdd }, adding ? "注册中…" : "注册"),
               h("button", { type: "button", className: "smx-btn", onClick: () => setAddOpen(false) }, "取消"),
             ),
             h("span", { className: "smx-count" }, "注册前会真连一次、拉工具清单；连不上就不写进注册表。"),
           ),
+        ),
+      ) : null,
+      // 导入配置: paste any tool's MCP config JSON, see it pretty-printed and validated,
+      // then import. Parsing is the host's, so preview and import agree.
+      importOpen ? h(Modal, { title: "导入 MCP 配置", onClose: () => { setImportOpen(false); setImportResults(null); } },
+        h("div", { className: "smx-form" },
+          h("div", { className: "smx-form__row smx-form__row--stack" },
+            h("span", { className: "smx-form__label" }, "配置 JSON"),
+            h("textarea", {
+              className: "smx-textarea",
+              spellCheck: false,
+              placeholder: "{\n  \"servers\": {\n    \"ardot\": { \"url\": \"http://127.0.0.1:50501/api/v1/mcp\", \"type\": \"http\" }\n  }\n}",
+              value: configText,
+              onPaste: (event) => {
+                const text = event.clipboardData ? event.clipboardData.getData("text") : "";
+                if (text === "") return;
+                event.preventDefault();
+                const formatted = formatJson(text);
+                setConfigText(formatted);
+                previewConfig(formatted);
+              },
+              onChange: (event) => {
+                setConfigText(event.target.value);
+                setConfigPreview(null);
+              },
+              onBlur: () => { if (configText.trim() !== "") previewConfig(configText); },
+            }),
+          ),
+          h("div", { className: "smx-form__row" },
+            h("button", { type: "button", className: "smx-btn", disabled: configText.trim() === "", onClick: () => previewConfig(configText) }, "校验"),
+            h("button", { type: "button", className: "smx-btn", onClick: () => { setConfigText(""); setConfigPreview(null); setImportResults(null); } }, "清空"),
+            h("span", { className: "smx-count" }, "支持 {\"servers\": {…}}、{\"mcpServers\": {…}} 或直接是名字表；http 与 stdio 都认"),
+          ),
+          configPreview === null ? null : h("div", { className: "smx-form__result" },
+            (configPreview.errors || []).length === 0
+              ? h(Notice, { kind: "success" }, "可以导入 " + configPreview.servers.length + " 个服务器")
+              : h(Notice, { kind: "error" }, "有 " + configPreview.errors.length + " 处需要修正"),
+            (configPreview.errors || []).map((item, index) => h("div", { key: index, className: "smx-form__error" },
+              h("span", { className: "smx-form__path" }, item.path === "" ? "(根)" : item.path),
+              h("span", null, item.message),
+            )),
+            (configPreview.servers || []).map((item) => h("div", { key: item.name, className: "smx-form__ok" },
+              h("span", { className: "smx-form__path" }, item.name),
+              h("span", null, item.transport + (item.transport === "stdio" ? " · " + item.command : " · " + item.url)),
+            )),
+          ),
+          importResults === null ? null : h("div", { className: "smx-form__result" },
+            importResults.results.map((item, index) => h("div", { key: index, className: item.ok ? "smx-form__ok" : "smx-form__error" },
+              h("span", { className: "smx-form__path" }, item.name),
+              h("span", null, item.ok ? "已" + (item.updated ? "更新" : "注册") + (item.error === undefined ? " · " + item.toolCount + " 个工具" : "") : item.error),
+            )),
+          ),
+          h("div", { className: "smx-form__actions" },
+            h("button", {
+              type: "button",
+              className: "smx-btn smx-btn--primary",
+              disabled: importing || configText.trim() === "" || (configPreview !== null && (configPreview.servers || []).length === 0),
+              onClick: runImportConfig,
+            }, importing ? "导入中…" : "导入" + (configPreview === null ? "" : " " + (configPreview.servers || []).length + " 个")),
+            h("button", { type: "button", className: "smx-btn", onClick: () => { setImportOpen(false); setImportResults(null); } }, "关闭"),
+          ),
+          h("span", { className: "smx-count" }, "导入前每个服务器都会真连一次并拉工具清单；连不上的会单独报告，不影响其它条目。"),
         ),
       ) : null,
     );
@@ -2074,6 +2179,23 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-setting { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-bg-layer-1); }",
     ".smx-setting--block { flex-direction:column; align-items:stretch; gap:10px; }",
     ".smx-setting__row { display:flex; align-items:center; gap:8px; min-width:0; flex-wrap:wrap; }",
+    // One form grid for the library modals: same label column, same control height, so
+    // no field is wider than the one beside it.
+    ".smx-form { display:flex; flex-direction:column; gap:10px; min-width:0; }",
+    ".smx-form__row { display:grid; grid-template-columns:132px minmax(0,1fr); align-items:center; gap:10px; }",
+    ".smx-form__row--stack { align-items:start; }",
+    ".smx-form__label { font-size:12px; color:var(--dsw-alias-label-secondary); text-align:right; }",
+    ".smx-form__row--stack .smx-form__label { padding-top:6px; }",
+    ".smx-form input, .smx-form select { width:100%; font-size:12px; height:30px; padding:0 8px; border-radius:6px; border:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); }",
+    ".smx-form select { cursor:pointer; }",
+    ".smx-form__row > .smx-btn { justify-self:start; }",
+    ".smx-form__actions { display:flex; align-items:center; gap:8px; padding-top:2px; }",
+    ".smx-form__result { display:flex; flex-direction:column; gap:4px; max-height:220px; overflow:auto; }",
+    ".smx-form__error, .smx-form__ok { display:grid; grid-template-columns:minmax(120px,32%) minmax(0,1fr); gap:8px; font-size:11px; line-height:1.5; padding:3px 0; }",
+    ".smx-form__error { color:var(--dsw-alias-state-error-primary); }",
+    ".smx-form__ok { color:var(--dsw-alias-label-secondary); }",
+    ".smx-form__path { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-textarea { width:100%; min-height:200px; resize:vertical; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:11px; line-height:1.55; padding:8px 10px; border-radius:8px; border:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); white-space:pre; overflow:auto; }",
     ".smx-setting__save { display:flex; justify-content:flex-end; align-items:center; gap:8px; }",
     ".smx-setting__label { flex:none; white-space:nowrap; font-size:12px; color:var(--dsw-alias-label-secondary); }",
     ".smx-input { font-size:12px; padding:5px 8px; border-radius:6px; border:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); width:72px; }",

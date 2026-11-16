@@ -6,6 +6,11 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
+- **能力库：粘贴 MCP 配置直接导入**：MCP 页新增「导入配置」，把别的工具导出的配置整段粘进去即可 —— 自动**格式化**（2 空格缩进）、**逐条校验**（报路径 + 原因）、按服务器**分别注册**。
+  - 认三种外壳：`{ "servers": {…} }`、`{ "mcpServers": {…} }`、以及直接是名字表；`type` 支持 `http` / `streamable-http` / `stdio`（`sse` 之类明确报「不支持的传输」），有 `url` 走 streamable-http、有 `command` 走 stdio，`args` / `env` / `headers` / `cwd` / `notes` 一并接。
+  - 解析器在宿主 `lib/mcp-config.js`（`parseMcpConfigDocument` / `formatMcpConfig`），预览与实际导入**同一个解析器**；`POST /mcp/config/parse` 只解析不落盘，`POST /mcp/config/import` 逐个走 `registerServerEntry()` —— 连不上只报告这一个，不影响其它条目。
+  - 测试：新增 `test/mcp-config-smoke.mjs`（ticket 里的 `{servers:{ardot:{url,type:http}}}`、`mcpServers`+stdio、裸名字表、五类错误各自的路径与文案、坏 JSON/空输入、格式化不改内容，以及 import 路由「1 个成功 1 个失败」且注册表只落成功的那个），已加入发布基线。
+- **表单宽度统一**：新增 MCP 与导入配置共用 `.smx-form` 栅格（132px 标签列 + 撑满的控件列、控件统一 30px 高），不再出现长短不一的输入框；真机量到五个控件宽度一致（596/578/596/596/596，标签列恒 132）。
 - **能力库所有浮层统一成弹窗（不再有右侧抽屉、不再页面平铺）**：详情、新增 MCP、导入本地技能、残留进程清理、高级设置全部走同一个 `Modal`（居中面板 + 遮罩 + `关闭`）；`展开更多` 也用它。`.smx-drawer` 从右侧抽屉改成**居中面板**（`width:min(720px,100%)` + `max-height:min(86vh,860px)` 内滚），所以能力管理里的「详情」同样变成弹窗。
   - 「高级设置」从页面里那块可展开卡片改成工具栏按钮 + 弹窗；「导入本地技能」不再作为页面区块出现，进弹窗并去掉重复标题。
   - 真机判读：详情 / 新增 MCP / 高级设置 / 导入四个浮层都量到 `centred=true`（面板水平居中），0 console 异常。

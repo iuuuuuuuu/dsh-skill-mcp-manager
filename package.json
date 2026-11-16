@@ -31,6 +31,7 @@
   "files": [
     "lib/index.js",
     "lib/child-env.js",
+    "lib/mcp-config.js",
     "lib/orphans.js",
     "lib/mcp-result.js",
     "lib/stdio-transport.js",
