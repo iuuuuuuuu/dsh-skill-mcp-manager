@@ -866,6 +866,11 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       setImportResults(null);
       try {
         const data = await postJson("/skill-mcp-manager/mcp/config/parse", { text });
+        // A pasted pair is repaired by the host; put the repaired document back in
+        // the box, so what gets imported is exactly what the user can read.
+        if (typeof data.formatted === "string" && data.formatted.trim() !== "" && data.formatted !== text) {
+          setConfigText(data.formatted);
+        }
         setConfigPreview(data);
       } catch (err) {
         setConfigPreview({ servers: [], errors: [{ path: "", message: errText(err) }] });

@@ -6,6 +6,10 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
+- **粘贴支持「单个条目 / 片段」**：不再只认完整文档 —— `"ardot": { "url": …, "type": "http" },`（从大文件里剪出来的一对、带尾随逗号）、`"a": {…},\n"b": {…},`（多对）、以及 `{ "name": "ardot", "url": …, "type": "http" }`（名字写在字段里）都能直接导入。
+  - 修法：宿主解析器先试原样，再试**去掉尾随逗号**（`{…,}` 这种包起来后仍然非法的形态单独处理）、再试**包上花括号**成文档，最后才回落到 JSON 报错；名字写在 `name` 字段里的单条目会被抬成「名字 → 配置」。
+  - 粘贴后把宿主**修好的文档**回填到输入框（真机判读：粘贴那 4 行片段 → 输入框变成规范的 `{ "ardot": {…} }`，提示「可以导入 1 个服务器 · ardot streamable-http · url」）。
+  - 测试：`mcp-config-smoke` 增加片段一节（单对 + 尾随逗号、多对、`name` 字段单条目、格式化把片段修成文档，且 `repaired` 标记为真）。
 - **能力库：粘贴 MCP 配置直接导入**：MCP 页新增「导入配置」，把别的工具导出的配置整段粘进去即可 —— 自动**格式化**（2 空格缩进）、**逐条校验**（报路径 + 原因）、按服务器**分别注册**。
   - 认三种外壳：`{ "servers": {…} }`、`{ "mcpServers": {…} }`、以及直接是名字表；`type` 支持 `http` / `streamable-http` / `stdio`（`sse` 之类明确报「不支持的传输」），有 `url` 走 streamable-http、有 `command` 走 stdio，`args` / `env` / `headers` / `cwd` / `notes` 一并接。
   - 解析器在宿主 `lib/mcp-config.js`（`parseMcpConfigDocument` / `formatMcpConfig`），预览与实际导入**同一个解析器**；`POST /mcp/config/parse` 只解析不落盘，`POST /mcp/config/import` 逐个走 `registerServerEntry()` —— 连不上只报告这一个，不影响其它条目。

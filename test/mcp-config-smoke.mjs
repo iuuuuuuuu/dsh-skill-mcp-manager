@@ -32,6 +32,26 @@ const check = (condition, message) => { if (!condition) failed.push(message); };
   check(declared.servers[0].transport === "stdio", "an explicit stdio type must be honoured");
 }
 
+// 2b) pasted FRAGMENTS: one pair out of a bigger file (with the separating comma),
+// and a single entry object that carries its name as a field
+{
+  const fragment = ['"ardot": {', '  "url": "http://127.0.0.1:50501/api/v1/mcp",', '  "type": "http"', '},'].join("\n");
+  const parsed = parseMcpConfigDocument(fragment);
+  console.log("fragment:", JSON.stringify(parsed));
+  check(parsed.errors.length === 0, "a pasted pair must parse, got " + JSON.stringify(parsed.errors));
+  check(parsed.servers.length === 1 && parsed.servers[0].name === "ardot", "the pair name must survive");
+  check(parsed.servers[0].transport === "streamable-http", "type http must still map to streamable-http");
+  check(parsed.repaired === true, "the parser must report that it repaired the input");
+
+  const two = ['"a": { "command": "npx" },', '"b": { "url": "https://x/mcp" },'].join("\n");
+  check(parseMcpConfigDocument(two).servers.length === 2, "several pasted pairs must all come out");
+
+  const inline = parseMcpConfigDocument(JSON.stringify({ name: "ardot", url: "http://x/mcp", type: "http" }));
+  check(inline.servers.length === 1 && inline.servers[0].name === "ardot", "a single entry with a name field must work");
+
+  check(formatMcpConfig(fragment).trim().startsWith("{"), "formatting must repair the fragment into a document");
+}
+
 // 3) every error is reported with its path, and nothing half-parsed leaks out
 {
   const bad = parseMcpConfigDocument(JSON.stringify({
