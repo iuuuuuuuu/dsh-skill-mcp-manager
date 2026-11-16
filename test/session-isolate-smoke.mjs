@@ -75,7 +75,7 @@ const ctx = {
   logger: { warn() {}, error() {}, info() {} },
 };
 
-function makeAgent() {
+function makeAgent(id, parentSession) {
   const sessionEffects = [];
   const agent = {
     ctx: {
@@ -92,7 +92,10 @@ function makeAgent() {
         return () => {};
       },
     },
-    session: { surface: { nodes: [] }, events: [] },
+    session: {
+      ...(id === undefined ? {} : { id, header: { id, ...(parentSession === undefined ? {} : { parentSession, origin: "subagent" }) } }),
+      seq: 0, surface: { nodes: [] }, eventAt() { return undefined; },
+    },
     sessionEffects,
   };
   return agent;
@@ -171,6 +174,69 @@ try {
   if (res.status !== 200 || body.ok !== true) failed.push(`refresh snapshot failed: ${body.error || res.status}`);
   const stillBAfterRefresh = await callText(agentB);
   if (stillBAfterRefresh !== idB) failed.push(`snapshot refresh replaced B's instance: ${stillBAfterRefresh}`);
+  // Real SDK transport + real child policy: no call is mocked. Parent/child share
+  // the grant, never the stdio process, and revocation closes child transports now.
+  const parent = makeAgent("runtime-parent");
+  const child = makeAgent("runtime-child", "runtime-parent");
+  const nested = makeAgent("runtime-nested", "runtime-child");
+  const unrelated = makeAgent("runtime-unrelated");
+  const capRoute = routes.find((route) => route.path === "/skill-mcp-manager/session-caps");
+  const flip = async (session, enabled) => {
+    const response = makeRes();
+    await capRoute.handler(makeReq("/skill-mcp-manager/session-caps", { session, kind: "mcp", name: "demo", enabled }), response);
+    if (response.status !== 200) throw new Error("switch failed: " + response.body);
+  };
+  const step = (agent) => preStep({ agent, signal: new AbortController().signal }, async () => ({ kind: "enter", messages: [] }));
+  await step(parent);
+  await flip("runtime-parent", true);
+  for (const agent of [child, nested, unrelated]) await step(agent);
+  const inheritedPeek = await mcpLoad.execute({ name: "demo", peek: true }, { agent: child });
+  if (!inheritedPeek) failed.push("child peek must work with inherited policy");
+  for (const agent of [parent, child, nested]) await mcpLoad.execute({ name: "demo" }, { agent });
+  const parentId = await callText(parent);
+  const childId = await callText(child);
+  const nestedId = await callText(nested);
+  if (new Set([parentId, childId, nestedId]).size !== 3) failed.push("inheriting agents must keep separate real MCP subprocesses");
+  let unrelatedError = "";
+  try { await mcpLoad.execute({ name: "demo", peek: true }, { agent: unrelated }); }
+  catch (error) { unrelatedError = String(error.message); }
+  if (!/off for this conversation/.test(unrelatedError)) failed.push("unrelated agent must not gain the parent's grant");
+  await flip("runtime-parent", false);
+  for (const agent of [child, nested]) {
+    let callError = "";
+    try { await callText(agent); } catch (error) { callError = String(error.message); }
+    if (!/off for this conversation/.test(callError)) failed.push("descendant bridge call must refuse immediately after parent revocation");
+  }
+  await flip("runtime-parent", true);
+  let closedError = "";
+  try { await callText(child); } catch (error) { closedError = String(error.message); }
+  if (!/not loaded/.test(closedError)) failed.push("revocation must actually dispose the child runtime, not just hide the tool");
+  await mcpLoad.execute({ name: "demo" }, { agent: child });
+  const freshChildId = await callText(child);
+  if (freshChildId === childId) failed.push("reloading after revocation must start a new real child MCP process");
+  // Make it eager and confirm the child gets its own actual native tool registration.
+  const tierRoute = routes.find((route) => route.path === "/skill-mcp-manager/mcp/tier");
+  const tierResponse = makeRes();
+  await tierRoute.handler(makeReq("/skill-mcp-manager/mcp/tier", { name: "demo", tier: "eager" }), tierResponse);
+  if (tierResponse.status !== 200) throw new Error("eager transition failed: " + tierResponse.body);
+  await step(child);
+  const native = registrations.findLast((record) => record.agent === child && record.active && record.definition.name === "mcp__demo__whoami");
+  if (!native) failed.push("child must natively register inherited eager tools in its own context");
+  if (native) {
+    const result = await native.definition.execute({}, { agent: child, signal: new AbortController().signal });
+    if (!JSON.stringify(result).includes("pid-")) failed.push("child eager execute must reach the real MCP process");
+  }
+  await flip("runtime-parent", false);
+  if (native?.active) failed.push("parent revocation must unregister the child's eager tool immediately");
+  if (native) {
+    let refused = "";
+    try { await native.definition.execute({}, { agent: child, signal: new AbortController().signal }); }
+    catch (error) { refused = String(error.message); }
+    if (!/off for this conversation/.test(refused)) failed.push("retained eager execute must refuse revoked inherited permissions at the call boundary");
+  }
+  console.log("real child MCP calls: separate PIDs, nested inheritance, live revocation, restart and eager native tool verified");
+
+
 } finally {
   for (const dispose of effects.reverse()) await dispose();
   await rm(tmp, { recursive: true, force: true });

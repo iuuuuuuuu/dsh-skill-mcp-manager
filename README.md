@@ -39,6 +39,8 @@ The conversation's view switcher (next to the trajectory view) gains a **能力�
 - **Grouped by origin**: MCP splits into your own servers and one group per plugin that mounts its own; skills split into 系统 and one group per plugin.
 - **Immediate**: a server that turns off is disconnected and dropped from this conversation's catalog, `mcp_load`/`mcp_call` refuse it, and a skill that turns off leaves the skill catalog while its load call is denied by a guard registered on this conversation. Global configuration and skill files are untouched, and the policy survives reopening the conversation.
 
+- **Subagents inherit capability switches**: spawn/fork children follow their parent's MCP and skill allow lists, including nested delegation and later revocation. Editing a child's own switches makes its policy independent. MCP processes/connections remain isolated per agent.
+
 ### 1.5 Sidebar entry
 
 The capability library is not settings-only: the sidebar gets a “能力库” row (right under Plugins), and one click opens the same card UI as a full page in the main area — no settings dialog needed. Hosts that predate that seat simply do not show the row, and the settings entry keeps working.

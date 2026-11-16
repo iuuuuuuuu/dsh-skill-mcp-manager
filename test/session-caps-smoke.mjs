@@ -65,6 +65,7 @@ let currentWorkspace = join(tmp, "workspace-a");
 const routes = [];
 const effects = [];
 const preSteps = [];
+const createdAgents = [];
 const toolByName = new Map();
 const webServer = { register(route) { routes.push(route); return () => {}; } };
 const warnings = [];
@@ -76,6 +77,7 @@ const ctx = {
   },
   on(event, handler) {
     if (event === "agent/pre-step") preSteps.push(handler);
+    if (event === "agent/created") createdAgents.push(handler);
     return () => {};
   },
   effect(fn) { const d = fn(); if (typeof d === "function") effects.push(d); return () => {}; },
@@ -438,6 +440,74 @@ const agent = makeAgent("sess-1");
   check(bad.status === 400, "an unknown action must be refused");
 }
 
+// Delegated agents must inherit the actual conversation policy, not the workspace default.
+{
+  const parent = makeAgent("caps-parent");
+  parent.session.header = { id: "caps-parent", cwd: currentWorkspace, isSeeded: false };
+  await preStep(parent);
+  await caps("POST", { session: "caps-parent", kind: "mcp", name: "alpha", enabled: true });
+  await caps("POST", { session: "caps-parent", kind: "mcp", name: "sequential", enabled: true });
+  await caps("POST", { session: "caps-parent", kind: "skills", name: "skill-one", enabled: true });
+  for (const mode of ["spawn", "fork"]) {
+    const child = makeAgent("caps-child-" + mode);
+    child.session.header = { id: child.session.id, parentSession: "caps-parent", origin: "subagent", isSeeded: mode === "fork" };
+    const decision = await preStep(child);
+    const state = await caps("GET", { session: child.session.id });
+    check(state.body.mcp.find((x) => x.name === "alpha")?.enabled === true, mode + " child must inherit registry MCP switch");
+    check(state.body.mcp.find((x) => x.name === "sequential")?.enabled === true, mode + " child must inherit plugin MCP switch");
+    check(state.body.skills.find((x) => x.name === "skill-one")?.enabled === true, mode + " child must inherit skill switch");
+    check(catalogText(decision).includes("alpha"), mode + " child's actual catalog must advertise the inherited MCP");
+    check(!child.shadows.some((x) => x.name === "skill-one"), mode + " child must not shadow inherited enabled skill");
+    check(await child.guards[0]({ name: "skill", arguments: { name: "skill-one" } }, async () => "allow") === "allow", mode + " child's actual skill guard must allow inherited skill");
+    check(await child.guards[0]({ name: "mcp__sequential__think" }, async () => "allow") === "allow", mode + " child's native MCP guard must allow inherited server");
+    if (mode === "fork") {
+      // An explicit child choice detaches a snapshot, including the OTHER kind.
+      await caps("POST", { session: child.session.id, kind: "skills", name: "skill-one", enabled: false });
+    }
+  }
+  const concurrent = Array.from({ length: 6 }, (_, index) => {
+    const child = makeAgent("caps-parallel-" + index);
+    child.session.header = { id: child.session.id, parentSession: "caps-parent", origin: "subagent", isSeeded: false };
+    return child;
+  });
+  check(createdAgents.length > 0, "child policy must be established on agent/created");
+  await Promise.all(concurrent.map(async (child) => {
+    for (const listener of createdAgents) await listener({ agent: child });
+    check((await caps("GET", { session: child.session.id })).body.mcp.find((x) => x.name === "alpha")?.enabled === true,
+      "created lifecycle must inherit before the child's first pre-step");
+  }));
+  const parallelSaved = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
+  check(concurrent.every((child) => parallelSaved[child.session.id]?.inheritFrom === "caps-parent"), "concurrent sibling creation must persist every relationship");
+  check(!warnings.some((line) => line.includes("cannot persist session capabilities")), "concurrent policy writes must not collide on the temp file");
+  const grandchild = makeAgent("caps-grandchild");
+  grandchild.session.header = { id: grandchild.session.id, parentSession: "caps-child-spawn", origin: "subagent", isSeeded: false };
+  await preStep(grandchild);
+  check((await caps("GET", { session: grandchild.session.id })).body.mcp.find((x) => x.name === "alpha")?.enabled === true, "nested child must resolve the inherited chain");
+  await caps("POST", { session: "caps-parent", kind: "mcp", bulk: true, enabled: false });
+  await caps("POST", { session: "caps-parent", kind: "skills", name: "skill-one", enabled: false });
+  const spawnState = await caps("GET", { session: "caps-child-spawn" });
+  const forkState = await caps("GET", { session: "caps-child-fork" });
+  check(spawnState.body.mcp.find((x) => x.name === "alpha")?.enabled === false, "inheriting child must follow parent's disable immediately");
+  check(forkState.body.mcp.find((x) => x.name === "alpha")?.enabled === true, "explicit child policy must preserve its detached MCP snapshot");
+  check(forkState.body.skills.find((x) => x.name === "skill-one")?.enabled === false, "explicit child choice must stay off");
+  check(await grandchild.guards[0]({ name: "skill", arguments: { name: "skill-one" } }, async () => "allow") === "deny", "existing descendant guard must read live parent revocation");
+  check(await grandchild.guards[0]({ name: "mcp__sequential__think" }, async () => "allow") === "deny", "descendant native MCP guard must read live bulk revocation");
+  let denied = "";
+  try { await toolByName.get("mcp_load").execute({ name: "alpha", peek: true }, { agent: grandchild }); }
+  catch (error) { denied = String(error.message); }
+  check(/off for this conversation/.test(denied), "descendant mcp_load must refuse after parent disables");
+  const before = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
+  check(before["caps-child-spawn"]?.inheritFrom === "caps-parent", "parent relation must be persisted, not a process-only cache");
+  check(before["caps-grandchild"]?.inheritFrom === "caps-child-spawn", "nested relation must be persisted");
+  check(before["caps-child-fork"]?.inheritFrom === undefined, "explicit child policy must stop inheriting");
+  const unrelated = makeAgent("caps-unrelated");
+  unrelated.session.cwd = join(tmp, "workspace-b");
+  unrelated.session.header = { id: unrelated.session.id, parentSession: "caps-child-fork", isSeeded: true };
+  await preStep(unrelated);
+  check(!(await caps("GET", { session: unrelated.session.id })).body.mcp.some((x) => x.enabled), "ordinary session forks must not inherit subagent permissions just because they have parentSession");
+  console.log("subagent inheritance: spawn, fork, nested, live revocation, explicit override and isolation checked");
+}
+
 // 7c) a pin scopes a registry entry to one workspace
 {
   const pinned = makeRes();
@@ -504,6 +574,50 @@ const agent = makeAgent("sess-1");
   check(badSession.status === 400, "a missing session must be refused");
   const unknown = await caps("POST", { session: "sess-1", kind: "mcp", name: "nope", enabled: true });
   check(unknown.status === 400, "an unknown MCP name must be refused");
+}
+
+// Reload must preserve inherited relations, detached overrides, empty choices and
+// fail-closed handling of damaged chains; it must not reseed from the workspace.
+{
+  const stored = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
+  stored["caps-cycle-a"] = { mcp: ["alpha"], skills: ["skill-one"], seeded: true, inheritFrom: "caps-cycle-b" };
+  stored["caps-cycle-b"] = { mcp: ["alpha"], skills: ["skill-one"], seeded: true, inheritFrom: "caps-cycle-a" };
+  stored["caps-missing"] = { mcp: ["alpha"], skills: [], seeded: true, inheritFrom: "caps-absent" };
+  await writeFile(join(dataDir, "session-caps.json"), JSON.stringify(stored), "utf8");
+  const restoredRoutes = [];
+  const restoredWeb = { register(route) {
+    if (restoredRoutes.some((x) => x.path === route.path && x.kind === route.kind)) throw new Error("duplicate route " + route.path);
+    restoredRoutes.push(route); return () => {};
+  } };
+  const restoredCtx = { ...ctx, webServer: restoredWeb,
+    get(name) { return name === "webServer" ? restoredWeb : ctx.get(name); },
+    inject(names, callback) {
+      const list = Array.isArray(names) ? names : [names];
+      if (list.includes("webServer")) callback({ ...restoredCtx, webServer: restoredWeb });
+      if (list.includes("loader")) callback({ loader: fakeLoader });
+      return () => {};
+    },
+  };
+  await apply(restoredCtx, { dataDir, profile: "__test__", importNativeMcp: false });
+  const route = restoredRoutes.find((x) => x.path === "/skill-mcp-manager/session-caps");
+  const request = async (method, session, extra = {}) => {
+    const res = makeRes();
+    await route.handler(makeReq(method, "/skill-mcp-manager/session-caps?session=" + session, method === "POST" ? { session, ...extra } : undefined), res);
+    check(res.status === 200, "restored policy route must answer 200");
+    return bodyOf(res);
+  };
+  const detached = await request("GET", "caps-child-fork");
+  check(detached.mcp.find((x) => x.name === "alpha")?.enabled === true, "detached child policy must survive reload");
+  await request("POST", "caps-parent", { kind: "mcp", name: "alpha", enabled: true });
+  for (const id of ["caps-child-spawn", "caps-grandchild"]) {
+    const state = await request("GET", id);
+    check(state.mcp.find((x) => x.name === "alpha")?.enabled === true, "restored descendants must resolve live parent changes: " + id);
+  }
+  for (const id of ["caps-cycle-a", "caps-missing"]) {
+    const state = await request("GET", id);
+    check(!state.mcp.some((x) => x.enabled) && !state.skills.some((x) => x.enabled), "broken parent chain must fail closed: " + id);
+  }
+  console.log("subagent inheritance persistence: reload, live parent changes, detached override, missing parent and cycle checked");
 }
 
 for (const disposer of effects) { try { await disposer(); } catch { /* best effort */ } }

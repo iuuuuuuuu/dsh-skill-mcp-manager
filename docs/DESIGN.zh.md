@@ -552,3 +552,17 @@ Ardot 的真实未登录 API 对照验证为：缺少 resource 返回 400 invali
 ## OAuth 授权反馈（2026-11-16）
 
 McpPanel 使用独立授权状态：preparing → pending → exchanging → checking；等待期间展示居中 OAuthFeedback 卡片，并提供重新打开授权页链接。授权回调保存令牌后进入 checking，实际调用 uiHandlers.testMcp 更新 lastCheck，最后进入 done。连接检测失败仍不代表授权失败。客户端收到 done 后静默重新获取 MCP 列表，清除该名称的手动检测 checks 缓存，再关闭卡片并展示 4 秒自动消失的 OAuthToast。失败保留卡片与重试按钮；卸载或新请求使旧轮询失效。会话能力列表的加载及开关逻辑不变。
+
+## 子代理的会话能力继承（2026-11-16）
+
+### 归属与数据
+
+使用宿主实际的 SessionHeader：origin 为 subagent 且 parentSession 非空才是委派子代理（spawn/fork 共用 childSessionMeta），不是靠名字、工作区或 fork 历史推断。agent/created 建立继承，agent/pre-step 再兜底；顶层默认策略仍来自原有工作区规则。新子条目存 {mcp:[],skills:[],seeded:true,inheritFrom:父sessionId}，运行时沿父链解析最新允许项。关系持久化，父实例退出后仍能使用已存父策略；链缺失/循环则全关。旧的明确允许项不自动覆盖。
+
+### 读取与修改
+
+sessionEntry 统一解析父链，目录、mcp_load/mcp_call、技能影子与 tools/pre-execute 守卫都使用有效策略；eager execute 在 tools/call 前再次验证。手动编辑子策略则先复制两类有效允许项，移除 inheritFrom，再改选中项。父修改会同步对继承的 liveSessions 执行技能影子协调或关闭被撤销的 MCP 连接/撤掉原生工具；新 eager 挂载与目录更新由各自下一 pre-step 完成。独立子策略不再跟随父修改。
+
+### 并发与隔离
+
+session-caps 写入排队，防并发创建/开关重用同一 tmp 文件导致 rename 冲突。只继承允许项，不复用 liveSessions 或连接；实测父/子/孙各有独立 stdio PID。未执行的调用在守卫或桥/原生 execute 上拒绝；已在途调用不强制中断。普通新会话、普通会话 fork、其它工作区不会因此获得授权。
