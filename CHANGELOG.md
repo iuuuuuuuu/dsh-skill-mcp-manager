@@ -2,7 +2,7 @@
 
 All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are documented here.
 
-## [未发布]
+## [1.3.1] — 2026-11-16
 
 ### Fixed
 
