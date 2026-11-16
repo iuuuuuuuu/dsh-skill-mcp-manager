@@ -6,8 +6,11 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Added
 
-- **OAuth 回调改用 `localhost`（不再用 `127.0.0.1`）**：MCP 授权规范推荐的回调形状是 `http://localhost:<port>/callback`，而 Ardot 的授权页对 `127.0.0.1` 回调报「加载授权信息失败（400）」——授权服务器普遍把 `127.0.0.1` 拒在白名单外。现在监听绑定 `localhost`、注册客户端用的也是它。
-  - 真机取证：无头浏览器打开 Ardot 授权页，未登录时页面只发 `/api/auth/redirect` 与 `/api/auth/sms/countries`（登录态才有授权信息接口），说明 400 发生在登录后的授权信息请求上、与参数中的回调地址强相关；动态注册本身成功（服务器每次都发新的 `client_id`）。
+- **修：Ardot OAuth 授权页 400 `invalid_target`**：授权请求和 token 交换都补上保护资源元数据中的 `resource`（Ardot 为 `https://ardot.tencent.com/mcp`），而不是只有 scope。真实授权 API 对照：相同动态客户端、PKCE、回调地址下，无 resource 为 400 `invalid_target`，有 resource 为 401 `Unauthenticated`（开始校验用户登录态）。
+  - 回归测试先验证缺字段会红，再让假授权服务器在授权与换 token 两端严格拒绝缺失/错误 resource；生产路径完整跑通。真实用户登录和最终 token 尚需本人确认，不把未登录探针算授权成功。
+
+- **OAuth 回调改用 `localhost`**（历史尝试，非 400 根因）：保留 loopback 监听与注册 URI 一致；此前关于 Ardot 拒绝 127.0.0.1 白名单的推断未得到验证，已撤回。
+  - 未登录浏览器只能看到登录页，不能据此推断登录后的 400 原因；后续直接请求授权 API 才确认是缺少 resource。
 - **修：/vendor/sortable 被注册了两次，之后所有路由都没生效**（真机：点授权 405、POST /mcp/add 405，而 /mcp、/order 正常）。真实 webServer.register 对重复 (kind, path) 抛错，那行遗留的 route(GET, /vendor/sortable) 是在改成 raw 注册后忘了删的 —— mountUi 在它那里中断，后面声明的 OAuth / add / delete / test / load / settings / session-caps / session-audit 全部没注册，而且没有明显报错。
   - 测试侧的真问题：ui-smoke 的 webServer 桩只 routes.push，不模拟重复拒绝，所以这类「静默吞掉后半段路由」永远是绿的（假绿）。现在桩对重复抛错，并断言 oauth/start、oauth/status、mcp/add、order、vendor/sortable 都必须注册、路由表不允许重复 path。故障注入：把重复行加回去 ui-smoke 立刻红，删掉恢复绿。
 - **修：点「授权」只看到 `405`**：宿主还停在旧版插件（OAuth 路由是后加的），客户端现在把 404/405 翻成「当前宿主还是旧版插件（没有授权接口）：重启 DSH 后再点「授权」」，不再甩状态码。

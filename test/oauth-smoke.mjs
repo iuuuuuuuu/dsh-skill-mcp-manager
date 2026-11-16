@@ -39,6 +39,9 @@ const fake = createServer(async (req, res) => {
     return json(201, { client_id: "test-client", token_endpoint_auth_method: "none" });
   }
   if (url.pathname === "/oauth/authorize") {
+    if (url.searchParams.get("resource") !== url.origin + "/mcp") {
+      return json(400, { error: "invalid_target" });
+    }
     seen.authorize = Object.fromEntries(url.searchParams.entries());
     const redirect = new URL(url.searchParams.get("redirect_uri"));
     redirect.searchParams.set("code", "test-code");
@@ -51,6 +54,9 @@ const fake = createServer(async (req, res) => {
     let raw = "";
     for await (const chunk of req) raw += chunk;
     seen.token = Object.fromEntries(new URLSearchParams(raw).entries());
+    if (seen.token.resource !== url.origin + "/mcp") {
+      return json(400, { error: "invalid_target" });
+    }
     if (seen.token.grant_type !== "authorization_code" || seen.token.code !== "test-code") {
       return json(400, { error: "invalid_grant" });
     }
@@ -150,9 +156,17 @@ check(res.code === 200 && typeof res.body.authorizeUrl === "string", "start must
 const authorize = new URL(res.body.authorizeUrl);
 check(authorize.searchParams.get("code_challenge_method") === "S256", "the flow must use PKCE S256");
 check(authorize.searchParams.get("scope") === "mcp:use", "the scope must come from the resource metadata");
+check(authorize.searchParams.get("resource") === origin + "/mcp", "authorization must include the protected resource, not just the scope");
 check(seen.register !== null && Array.isArray(seen.register.redirect_uris), "a client must be registered with a redirect uri");
-// MCP 授权规范推荐 http://localhost:<port>/callback；不少服务器把 127.0.0.1 拒在白名单外。
+// Check the registered loopback callback; localhost versus 127.0.0.1 was not the cause of invalid_target.
 check(/^http:\/\/localhost:\d+\/callback$/.test(seen.register.redirect_uris[0]), "the redirect must be a loopback localhost URL: " + seen.register.redirect_uris[0]);
+
+// Reproduce Ardot's exact rejection when the audience is omitted.
+const missingResource = new URL(authorize);
+missingResource.searchParams.delete("resource");
+const rejectedTarget = await fetch(missingResource, { redirect: "manual" });
+check(rejectedTarget.status === 400 && (await rejectedTarget.json()).error === "invalid_target",
+  "missing resource must reproduce invalid_target before login");
 
 // 3) act like the browser: follow the authorize redirect into the host's callback
 const callback = await fetch(res.body.authorizeUrl, { redirect: "follow" });
@@ -164,6 +178,7 @@ await new Promise((resolve) => setTimeout(resolve, 400));
 check(seen.token !== null && seen.token.grant_type === "authorization_code", "the code must be exchanged");
 check(typeof seen.token.code_verifier === "string" && seen.token.code_verifier.length > 20, "the PKCE verifier must be sent");
 check(seen.token.redirect_uri === seen.register.redirect_uris[0], "the exchange must reuse the registered redirect");
+check(seen.token.resource === origin + "/mcp", "token exchange must include the same protected resource");
 
 // 4) the token is stored on the entry, and the probe now succeeds
 const stored = JSON.parse(await readFile(join(dataDir, "registry.json"), "utf8"));

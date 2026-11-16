@@ -542,3 +542,9 @@ tmp/               # 插件内部临时文件（AI 不直接引用；无 args_fi
 - Slots 树（client Inspect）：`settings.section`、`sidebar.footer.action`。
 - 用户参考实现（桥接 args 文件 workaround 的教训来源）：[alone-tree/Capability-Library](https://github.com/alone-tree/Capability-Library)。
 
+
+## OAuth 资源绑定修正（2026-11-16）
+
+授权服务器的 scope 只表示权限，不能代替目标资源。`startMcpOAuth()` 从 `planOAuth()` 的保护资源元数据取 `resource`，将其写入授权 URL 并保存在当次 flow；回调用同一个 resource 交换授权码。`buildAuthorizeUrl()` 与 `exchangeCode()` 分别把它放入查询参数及 application/x-www-form-urlencoded 表单（RFC 8707）。不得用授权服务器 issuer 替代 MCP 资源地址。
+
+Ardot 的真实未登录 API 对照验证为：缺少 resource 返回 400 invalid_target，携带 https://ardot.tencent.com/mcp 返回 401 Unauthenticated。此前 localhost/127.0.0.1 白名单解释没有证据，撤回；现有 localhost 回调保持不变。测试在两个请求边界校验 resource，并复现缺字段的拒绝。该验证不代表用户已完成登录或已拿到真实 token。
