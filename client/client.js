@@ -1264,7 +1264,13 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         }
         setError("授权没有在 2 分钟内完成，可以再点一次「授权」");
       } catch (err) {
-        setError(errText(err));
+        // OAuth routes arrived after the rest of the page: an old host answers 405 and a
+        // bare status is not an answer — say what to do instead.
+        if (hostRouteMissing(err)) {
+          setError("当前宿主还是旧版插件（没有授权接口）：重启 DSH 后再点「授权」。");
+        } else {
+          setError(errText(err));
+        }
       } finally {
         setOauthBusy("");
       }
