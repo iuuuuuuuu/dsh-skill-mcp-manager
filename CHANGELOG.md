@@ -2,6 +2,14 @@
 
 All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are documented here.
 
+## [未发布]
+
+### Fixed
+
+- **会话技能卡片开关后消失**：会话影子注册现在保留原技能的路径、provider、资源定位和正文，仅修改调用权限；能力管理不再把没有 SKILL.md 路径的 runtime 技能过滤掉。连续开关 agent-notes、filesystem 技能及批量开关后，关闭项仍保留卡片、详情和再次开启入口，模型侧仍按策略禁止调用。
+- **兼容新宿主的 preset 作用域**：能力库与冷会话读取使用 acquireScope() 租约，并在完整读取结束后释放；旧宿主保留 standingKeyFor() 路径。存活会话优先读取自己继承的精确 preset revision，不混入其它 preset；影子读取附带 cwd，策略不变时也会检查新发现的技能。
+- **回归验证**：修正测试桩，使影子真正参与 list/get 的同名覆盖；新增连续单项开关、无路径 runtime 技能、延迟发现和 preset 租约生命周期断言。旧代码下先失败。隔离环境使用本机宿主真实 SkillRegistry、Cordis scope 与 FileSystemSkillProvider，真实 HTTP 单项/批量开关检查目录权限；生产 CapabilityView 在独立无头 Chrome + React 18 中实际渲染，开启、关闭和刷新后四张卡片均保留，截图已逐张判读。未修改用户会话策略，未重启正在运行的宿主。
+
 ## [1.3.1] — 2026-11-16
 
 ### Fixed

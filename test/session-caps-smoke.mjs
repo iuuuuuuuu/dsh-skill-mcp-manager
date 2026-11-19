@@ -35,16 +35,29 @@ const skills = {
   "skill-one": { name: "skill-one", description: "First fixture", path: join(tmp, "one", "SKILL.md"), provider: "filesystem", invocation: { modelInvocable: true, userInvocable: true }, content: "# one" },
 };
 
+// Real registry semantics: agent-local registrations shadow same-name provider
+// definitions for BOTH list and get, including a registration without a path.
+const activeShadows = new WeakMap();
+const modernPresetKey = {};
+let modernPresets = false;
+let presetLeases = 0;
+let presetAcquires = 0;
 const liveSkillsService = {
   registerProvider() { return () => {}; },
   // The standing scope (no scope option) is what 能力库 lists; a conversation scope
   // only sees its own layer. The view must show the union, not one of them.
   async list(options) {
-    const all = Object.values(skills).map((s) => ({ name: s.name, description: s.description, invocation: s.invocation, provider: s.provider }));
-    if (options?.scope !== undefined) return all.filter((s) => s.name !== "only-standing");
-    return all.filter((s) => s.name !== "only-conversation");
+    const standing = options?.scope === modernPresetKey;
+    if (standing && presetLeases === 0) throw new Error("preset scope read after lease disposal");
+    const visible = Object.values(skills).filter((s) => (standing || options?.scope === undefined) ? s.name !== "only-conversation" : s.name !== "only-standing");
+    const merged = new Map(visible.map((s) => [s.name, s]));
+    for (const [name, shadow] of activeShadows.get(options?.scope) ?? []) merged.set(name, shadow);
+    return [...merged.values()];
   },
-  async get(name) { return skills[name]; },
+  async get(name, options) {
+    if (options?.scope === modernPresetKey && presetLeases === 0) throw new Error("preset definition read after lease disposal");
+    return activeShadows.get(options?.scope)?.get(name) ?? skills[name];
+  },
 };
 
 // One plugin-mounted MCP row: the desktop app's loader owns these, so the plugin can
@@ -67,7 +80,10 @@ const effects = [];
 const preSteps = [];
 const createdAgents = [];
 const toolByName = new Map();
-const webServer = { register(route) { routes.push(route); return () => {}; } };
+const webServer = { register(route) {
+  if (routes.some((item) => item.path === route.path && item.kind === route.kind)) throw new Error("duplicate route " + route.path);
+  routes.push(route); return () => {};
+} };
 const warnings = [];
 const ctx = {
   tools: { register(definition) { toolByName.set(definition.name, definition); return () => {}; } },
@@ -89,6 +105,13 @@ const ctx = {
   },
   webServer,
   get(name) {
+    if (name === "agentPresets" && modernPresets) return {
+      async acquireScope() {
+        presetAcquires += 1;
+        presetLeases += 1;
+        return { key: modernPresetKey, async [Symbol.asyncDispose]() { presetLeases -= 1; } };
+      },
+    };
     if (name === "webServer") return webServer;
     if (name === "skills") return liveSkillsService;
     if (name === "workingDirectory") return { ensure: async (agent) => agent?.session?.cwd ?? currentWorkspace };
@@ -129,7 +152,8 @@ function makeAgent(sessionId) {
   const guards = [];
   const shadows = [];
   const disposed = [];
-  return {
+  const active = new Map();
+  const agent = {
     ctx: {
       tools: { register() { return () => {}; } },
       on(event, handler) {
@@ -139,7 +163,11 @@ function makeAgent(sessionId) {
       skills: {
         register(skill) {
           shadows.push(skill);
-          return () => { disposed.push(skill.name); };
+          active.set(skill.name, skill);
+          return () => {
+            disposed.push(skill.name);
+            if (active.get(skill.name) === skill) active.delete(skill.name);
+          };
         },
       },
       effect(fn) { fn(); return () => {}; },
@@ -149,6 +177,8 @@ function makeAgent(sessionId) {
     shadows,
     disposed,
   };
+  activeShadows.set(agent, active);
+  return agent;
 }
 
 const failed = [];
@@ -236,6 +266,38 @@ const agent = makeAgent("sess-1");
   check(agent.shadows.length === 3, "every switched-off skill needs a shadow, got " + agent.shadows.length);
   check(!agent.shadows.some((s) => s.name === "workspace-skill"), "a workspace-owned skill that starts on must NOT get a shadow");
   check(agent.shadows.every((s) => s.invocation?.modelInvocable === false), "shadows must be model-invisible");
+}
+
+// Switching any row must not remove shadowed filesystem/plugin skills from management.
+{
+  for (const [name, enabled] of [["only-conversation", true], ["skill-one", true], ["skill-one", false], ["only-conversation", false]]) {
+    const res = await caps("POST", { session: "sess-1", kind: "skills", name, enabled });
+    check(res.status === 200, "repeated skill switch must succeed: " + name + ": " + JSON.stringify(res.body));
+    check(res.body.skills?.length === 4, "switching " + name + " must retain all management cards");
+    check(res.body.skills?.find((s) => s.name === name)?.enabled === enabled, "selected switch must keep its new state");
+    check(res.body.skills?.find((s) => s.name === "skill-one")?.provider === "filesystem", "a policy shadow must not replace source attribution");
+    const refreshed = await caps("GET", { session: "sess-1" });
+    check(refreshed.body.skills?.length === 4, "a subsequent GET must retain every disabled card");
+  }
+}
+
+// Pathless runtime skills and late provider discoveries remain manageable too.
+{
+  const runtimeAgent = makeAgent("runtime-probe");
+  await preStep(runtimeAgent);
+  skills["runtime-help"] = { name: "runtime-help", description: "Provider-managed runtime skill", provider: "runtime-fixture", source: "runtime", invocation: { modelInvocable: true, userInvocable: true }, content: "# runtime" };
+  await preStep(runtimeAgent);
+  check(activeShadows.get(runtimeAgent)?.has("runtime-help"), "unchanged policy must still shadow newly discovered skills");
+  for (const enabled of [true, false, true, false]) {
+    const res = await caps("POST", { session: "runtime-probe", kind: "skills", name: "runtime-help", enabled });
+    check(res.status === 200 && res.body.skills?.find((s) => s.name === "runtime-help")?.enabled === enabled,
+      "runtime skill without a file path must stay switchable: " + JSON.stringify(res.body));
+    check(await runtimeAgent.guards[0]({ name: "skill", arguments: { name: "runtime-help" } }, async () => "allow") === (enabled ? "allow" : "deny"),
+      "runtime skill invocation boundary must follow switch");
+  }
+  await caps("POST", { session: "runtime-probe", kind: "skills", name: "runtime-help", enabled: true });
+  check(!activeShadows.get(runtimeAgent)?.has("runtime-help"), "enabling runtime skill must dispose its policy shadow");
+  delete skills["runtime-help"];
 }
 
 // 2) turning one MCP server on mounts it into the catalog; mcp_load follows
@@ -651,6 +713,19 @@ const agent = makeAgent("sess-1");
     check(!state.mcp.some((x) => x.enabled) && !state.skills.some((x) => x.enabled), "broken parent chain must fail closed: " + id);
   }
   console.log("subagent inheritance persistence: reload, live parent changes, detached override, missing parent and cycle checked");
+}
+
+// Modern hosts removed standingKeyFor; all preset reads must retain/release a lease.
+{
+  modernPresets = true;
+  const res = await caps("GET", { session: "sess-modern-cold" });
+  check(res.status === 200 && res.body.skills?.some((s) => s.name === "only-standing"), "modern preset-only skill must appear without a live agent");
+  const response = makeRes();
+  await routeByPath("/skill-mcp-manager/skills").handler(makeReq("GET", "/skill-mcp-manager/skills"), response);
+  check(bodyOf(response).skills?.some((s) => s.name === "only-standing"), "library must use modern preset scope too");
+  check(presetAcquires >= 2, "supported acquireScope must be used instead of a silent global fallback");
+  check(presetLeases === 0, "all preset scope leases must be released after reads");
+  modernPresets = false;
 }
 
 for (const disposer of effects) { try { await disposer(); } catch { /* best effort */ } }

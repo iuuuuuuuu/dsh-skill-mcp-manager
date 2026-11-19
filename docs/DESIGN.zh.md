@@ -570,3 +570,11 @@ session-caps 写入排队，防并发创建/开关重用同一 tmp 文件导致 
 ### 旧子代理的升级迁移
 
 已存在的子代理可能在旧版首次 pre-step 时被自动写入 seeded:true 的空允许项。初始化必须在 seeded 早退前检查真实 lineage；未显式标记、未继承且两类列表均空的子代理迁移为 inheritFrom。新 UI 修改写 explicit:true，loader 保留；即使选择全关也不会再被视作旧自动策略。已有自定义非空项不改。由于旧格式未记录来源，历史未标记手动全关与自动全关无法区分，迁移采用空子策略继承父项规则；顶层会话及普通 fork 不受影响。
+
+## 会话技能开关与管理目录隔离（2026-11-20）
+
+会话能力列表属于 invocation-neutral 管理视图，不能复用只认 SKILL.md 的磁盘操作过滤器。runtime 技能可以没有 path；关闭项仍须显示名字、描述、真实 provider、详情和再次开启入口。会话影子注册保留原定义的路径、资源定位、来源与正文，仅覆盖 modelInvocable/userInvocable；模型侧目录过滤与 tools/pre-execute 守卫继续生效。每次协调都检查当前技能集合，避免仅按允许项签名早退而漏掉新发现的技能；已有影子不重复注册。
+
+新宿主移除 standingKeyFor，改用 acquireScope() 返回的 revision 租约。能力库与冷视图的 list/get 必须在租约存活期间完成，并在 finally 释放；旧宿主仍兼容 standingKeyFor。存活会话优先通过 agent 读取其继承的精确 revision，不混入其它 preset；技能详情与影子原定义读取带上 cwd。来源分组以注册表返回的 provider 为准，不通过临时路径猜测插件归属。
+
+回归桩必须模拟真实 registry 的同名覆盖，且 list 与 get 都受会话影子影响。验证覆盖单项连续开关、批量开关、后续 GET、无路径 runtime 技能、目录晚到与租约释放；隔离实测使用实际宿主的 SkillRegistry/Cordis/FileSystemSkillProvider，经生产 HTTP handler 与真实 React 客户端检查，未替用户修改活跃会话策略。
