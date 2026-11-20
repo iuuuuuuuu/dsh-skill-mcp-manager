@@ -519,6 +519,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [importPlan, setImportPlan] = useState(null);
     const [importPicked, setImportPicked] = useState([]);
     const [busyImport, setBusyImport] = useState(false);
+    const [detail, setDetail] = useState(null);
 
     const refresh = useCallback(async () => {
       setLoading(true);
@@ -660,7 +661,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
 
     async function toggle(skill) {
       try {
-        await postJson("/skill-mcp-manager/skills/toggle", { name: skill.name, enabled: !skill.modelInvocable });
+        await postJson("/skill-mcp-manager/skills/toggle", { name: skill.name, enabled: !skill.modelInvocable, cwd: workspace });
         setSkills((current) => current && current.map((item) =>
           item.name === skill.name ? { ...item, modelInvocable: !skill.modelInvocable } : item,
         ));
@@ -669,9 +670,17 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
 
+    async function showDetail(skill) {
+      try {
+        const data = await getJson("/skill-mcp-manager/skills/detail?name=" + encodeURIComponent(skill.name)
+          + "&cwd=" + encodeURIComponent(workspace));
+        setDetail(data);
+      } catch (err) { setError(errText(err)); }
+    }
+
     async function open(skill) {
       try {
-        await postJson("/skill-mcp-manager/skills/open", { name: skill.name });
+        await postJson("/skill-mcp-manager/skills/open", { name: skill.name, cwd: workspace });
         setNotice("已用系统编辑器打开 " + skill.path);
       } catch (err) {
         setError(errText(err) + " \u2014 " + skill.path);
@@ -681,7 +690,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     async function remove(skill) {
       setConfirming("");
       try {
-        await postJson("/skill-mcp-manager/skills/delete", { name: skill.name });
+        await postJson("/skill-mcp-manager/skills/delete", { name: skill.name, cwd: workspace });
         setNotice("已删除 " + skill.name);
         await refresh();
       } catch (err) {
@@ -697,18 +706,18 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       try {
         let data;
         try {
-          data = await postJson("/skill-mcp-manager/skills/toggle-group", { provider: group.provider, enabled });
+          data = await postJson("/skill-mcp-manager/skills/toggle-group", { provider: group.provider, enabled, cwd: workspace });
         } catch (groupError) {
           // Older hosts have no batch route: do the same work one skill at a time
           // instead of leaving the switch dead.
           const updatedItems = [];
           const skippedItems = [];
           for (const skill of group.skills) {
-            if (skill.readonly) {
+            if (skill.readonly || !/(^|[\\/])SKILL\.md$/i.test(skill.path || "")) {
               skippedItems.push(skill.name);
               continue;
             }
-            await postJson("/skill-mcp-manager/skills/toggle", { name: skill.name, enabled });
+            await postJson("/skill-mcp-manager/skills/toggle", { name: skill.name, enabled, cwd: workspace });
             updatedItems.push({ name: skill.name, modelInvocable: enabled });
           }
           if (updatedItems.length === 0 && skippedItems.length === 0) throw groupError;
@@ -719,7 +728,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
           updated.has(item.name) ? { ...item, modelInvocable: updated.get(item.name) } : item));
         const skipped = (data.skipped || []).length;
         setNotice("已" + (enabled ? "开启 " : "关闭 ") + group.title + " 下的 " + updated.size + " 个技能"
-          + (skipped > 0 ? "（" + skipped + " 个随包只读，未改动）" : ""));
+          + (skipped > 0 ? "（" + skipped + " 个只读，未改动）" : ""));
       } catch (err) {
         setError(errText(err));
       } finally {
@@ -733,24 +742,26 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     }
 
     function skillCard(skill) {
+      const bundle = typeof skill.path === "string" && /(^|[\\/])SKILL\.md$/i.test(skill.path);
+      const readonly = skill.readonly || !bundle;
       return h("article", {
         key: skill.name,
         "data-cap-name": skill.name,
-        className: cx("smx-card", skill.readonly && "is-readonly", !skill.modelInvocable && "is-dimmed"),
+        className: cx("smx-card", readonly && "is-readonly", !skill.modelInvocable && "is-dimmed"),
       },
         h("div", { className: "smx-card__head" },
           h("span", { className: "smx-mark" }, mark(skill)),
           h("div", { className: "smx-card__ident" },
             h("span", { className: "smx-card__name", title: skill.name }, skill.name),
-            h("span", { className: "smx-card__sub", title: skill.path }, skill.path),
+            h("span", { className: "smx-card__sub", title: skill.path || skill.provider }, skill.path || "来源 " + (skill.provider || "runtime")),
           ),
-          skill.readonly ? h(Badge, { tone: "muted" }, "只读") : null,
+          readonly ? h(Badge, { tone: "muted" }, "只读") : null,
         ),
         h("p", { className: cx("smx-card__desc", !skill.description && "is-empty") },
           skill.description ? skill.description : "这个技能没有写描述"),
         h("div", { className: "smx-card__foot" },
-          skill.readonly
-            ? h("span", { className: "smx-card__hint" }, "shipped 技能，只能查看")
+          readonly
+            ? h("span", { className: "smx-card__hint" }, bundle ? "shipped 技能，只能查看" : "运行时技能，由插件管理")
             : h("label", { className: "smx-switchline" },
                 h(Switch, { checked: skill.modelInvocable, onChange: () => toggle(skill) }),
                 h("span", { className: "smx-switchline__label" }, skill.modelInvocable ? "模型可见" : "模型隐藏"),
@@ -765,8 +776,10 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               h("option", { value: "" }, "未分组"),
               (groups.groups || []).map((group) => h("option", { key: group.id, value: group.id }, group.name)),
             ),
-            h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => open(skill) }, "打开"),
-            skill.readonly
+            bundle
+              ? h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => open(skill) }, "打开")
+              : h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => showDetail(skill) }, "详情"),
+            readonly
               ? null
               : confirming === skill.name
                 ? h("span", { className: "smx-confirm" },
@@ -874,7 +887,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       // Every group starts expanded; a plugin group then shows one row of cards and
       // keeps the rest behind 展开更多.
       const unfolded = openGroups[group.key] !== undefined ? openGroups[group.key] : true;
-      const writable = loose(group).filter((skill) => !skill.readonly);
+      const writable = loose(group).filter((skill) => !skill.readonly && typeof skill.path === "string" && /(^|[\\/])SKILL\.md$/i.test(skill.path));
       const enabled = loose(group).filter((skill) => skill.modelInvocable).length;
       return h("section", { key: group.key, className: cx("smx-group", "smx-group--" + group.kind) },
         h("div", { className: "smx-group__head" },
@@ -910,7 +923,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                   }),
                   h("span", { className: "smx-switchline__label" },
                     writable.length === 0
-                      ? "随包只读"
+                      ? "只读"
                       : enabled === 0
                         ? "全部关闭"
                         : enabled === loose(group).length
@@ -978,10 +991,16 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ));
 
     return h("div", { className: "smx" },
+      detail ? h(Modal, { title: detail.name + " 详情", onClose: () => setDetail(null) },
+        h("div", { className: "smx-detail" },
+          h("div", { className: "smx-detail__meta" }, "来源 " + (detail.provider || "runtime")),
+          detail.description ? h("p", { className: "smx-detail__text" }, detail.description) : null,
+          h("pre", { className: "smx-pre" }, detail.content || "这个技能没有正文。"),
+        )) : null,
       h("div", { className: "smx-head" },
         h("span", { className: "smx-count" }, skills
           ? String(skills.length) + " 个技能 \u00b7 模型可见 " + skills.filter((s) => s.modelInvocable).length + " 个"
-            + (originGroups.length > 1 ? " \u00b7 " + (originGroups.length - 1) + " 个插件分组" : "")
+            + (originGroups.some((group) => group.kind === "plugin") ? " \u00b7 " + originGroups.filter((group) => group.kind === "plugin").length + " 个插件分组" : "")
           : ""),
         h("select", {
           className: "smx-select",
@@ -1893,10 +1912,9 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       oauthToast ? h(OAuthToast, { message: oauthToast, onClose: closeOAuthToast }) : null,
       h("div", { className: "smx-head" },
         h("span", { className: "smx-count" }, entries
-          ? String(entries.length) + " 个服务器 \u00b7 连通 " + okCount + " \u00b7 失败 " + failCount
+          ? String(entries.length + nativeEntries.length) + " 个服务器（注册表 " + entries.length + " / 插件 " + nativeEntries.length + "） \u00b7 注册表检测：连通 " + okCount + " \u00b7 失败 " + failCount
             + (busyCount > 0 ? " \u00b7 检测中 " + busyCount : "")
             + " \u00b7 未检测 " + outcomes.filter((outcome) => outcome === "none").length
-            + (nativeEntries.length > 0 ? " \u00b7 插件 MCP " + nativeEntries.length : "")
           : ""),
         h("div", { className: "smx-head__meta" },
           h("button", { type: "button", className: "smx-btn smx-btn--primary", onClick: () => setAddOpen(true) }, "新增 MCP"),
@@ -2356,9 +2374,10 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     function tile(kind, item, meta, badge) {
       const key = kind + ":" + item.name;
       const running = busy === key || busy === "many:" + kind;
+      const globallyOff = item.globallyEnabled === false;
       return h("article", { key, className: cx("smx-cap", !item.enabled && "is-off") },
         h("div", { className: "smx-cap__head" },
-          h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle"), title: item.enabled ? "可用" : "本对话已关闭" }),
+          h("span", { className: cx("smx-dot", item.enabled ? "smx-dot--ok" : "smx-dot--idle"), title: globallyOff ? "能力库已全局停用" : item.enabled ? "可用" : "本对话已关闭" }),
           h("span", { className: "smx-cap__name", title: item.name }, item.name),
           badge ? h(Badge, { tone: "muted" }, badge) : null,
         ),
@@ -2367,8 +2386,8 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         h("div", { className: "smx-cap__meta" }, meta),
         h("div", { className: "smx-cap__foot" },
           h("label", { className: "smx-switchline" },
-            h(Switch, { checked: item.enabled, disabled: running, onChange: (next) => flip(kind, item.name, next) }),
-            h("span", { className: "smx-switchline__label" }, item.enabled ? "可用" : "已关闭"),
+            h(Switch, { checked: item.enabled, disabled: running || globallyOff, onChange: (next) => flip(kind, item.name, next) }),
+            h("span", { className: "smx-switchline__label" }, globallyOff ? "全局停用（先在能力库启用）" : item.enabled ? "可用" : "已关闭"),
           ),
           h("button", { type: "button", className: "smx-btn smx-btn--ghost", disabled: detailBusy, onClick: () => openDetail(kind, item.name) }, "详情"),
         ),
@@ -2404,7 +2423,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               type: "button",
               className: "smx-btn smx-btn--ghost",
               disabled: disabled || items.length === 0,
-              onClick: () => flipMany(kind, items.map((item) => item.name), true),
+              onClick: () => flipMany(kind, items.filter((item) => item.globallyEnabled !== false).map((item) => item.name), true),
             }, "全部开启"),
             h("button", {
               type: "button",
@@ -2444,7 +2463,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                       type: "button",
                       className: "smx-btn smx-btn--ghost",
                       disabled: disabled,
-                      onClick: () => flipMany(kind, bucket.items.map((item) => item.name), true, bucket.title),
+                      onClick: () => flipMany(kind, bucket.items.filter((item) => item.globallyEnabled !== false).map((item) => item.name), true, bucket.title),
                     }, "全开"),
                     h("button", {
                       type: "button",
@@ -2505,7 +2524,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         h("div", null,
           h("h2", { className: "smx-title" }, "能力管理"),
           h("div", { className: "smx-subtitle" },
-            "新对话默认全部关闭（可按工作区存一份默认）。这里的开关只影响这个对话，并且即时生效：关掉的 MCP 会立刻断开、从本对话的工具面与目录里消失，技能与插件自带的 MCP 调用会被本对话拒绝。"),
+            "这里显示本对话作用域的完整目录（含全局停用项）；能力库的总数包含注册表和插件。同一工作区、同一智能体配置下可逐项核对，工作区自带或会话专属项会另列。开关只影响本对话：关闭 MCP 会断开连接，技能与插件 MCP 调用会被拒绝。"),
         ),
         h("div", { className: "smx-head__meta" },
           h("span", { className: "smx-count" }, state === null ? "" : "本对话开启 " + onCount + " / " + (mcp.length + skills.length)),

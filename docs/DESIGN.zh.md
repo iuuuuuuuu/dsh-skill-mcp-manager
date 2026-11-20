@@ -83,7 +83,7 @@ tmp/               # 插件内部临时文件（AI 不直接引用；无 args_fi
 ### 4.1 扫描与递归规则（已定）
 
 - **原生目录**：复用内建 filesystem provider（`<dshHome>/skills` 等），UI 经 `ctx.skills.list({ scope })` 展示。内建 `dsh-skill-filesystem` 挂在 agent preset 层，不是本插件的全局层；管理页无当前 agent，要用 `agentPresets.standingKeyFor()` 作为 scope（与 host `skill.list` 冷读一致），否则只能看到本插件递归扫描的 Skill，看不到 `~/.dsh/skills` 里经 Junction 接入的条目（如 `capability-entry`）。
-  - **仅管理 bundle 型（`<dir>/SKILL.md`）**：内建 provider 也会发现平铺 `<name>.md`，但本插件只认 bundle——平铺 `.md` 条目在 UI 中过滤不展示、不启停、不删除（避免把无关说明文档当技能管理）。
+  - **目录与磁盘操作分开**：UI 列举宿主注册表的全部技能，包含没有文件路径的 provider 技能；只有 bundle 型（`<dir>/SKILL.md`）接受 frontmatter 启停和目录删除，非 bundle / runtime 技能只读并提供正文详情。递归 provider 仍只扫描 SKILL.md，不扩大扫描范围。
 - **外接递归目录**：自建 provider（`ctx.skills.registerProvider`）：
   - 配置：`customRecursiveDirs`（settings.json），例如只加一个 `global-skills` 文件夹即自动递归扫描其下所有 skill。
   - **递归规则：任意深度下只认 `<dir>/SKILL.md`**；**不扫 `<dir>/<name>.md` 平铺文件**（避免把无关 md 当技能）。
@@ -578,3 +578,11 @@ session-caps 写入排队，防并发创建/开关重用同一 tmp 文件导致 
 新宿主移除 standingKeyFor，改用 acquireScope() 返回的 revision 租约。能力库与冷视图的 list/get 必须在租约存活期间完成，并在 finally 释放；旧宿主仍兼容 standingKeyFor。存活会话优先通过 agent 读取其继承的精确 revision，不混入其它 preset；技能详情与影子原定义读取带上 cwd。来源分组以注册表返回的 provider 为准，不通过临时路径猜测插件归属。
 
 回归桩必须模拟真实 registry 的同名覆盖，且 list 与 get 都受会话影子影响。验证覆盖单项连续开关、批量开关、后续 GET、无路径 runtime 技能、目录晚到与租约释放；隔离实测使用实际宿主的 SkillRegistry/Cordis/FileSystemSkillProvider，经生产 HTTP handler 与真实 React 客户端检查，未替用户修改活跃会话策略。
+
+## 能力库与能力管理的完整目录计数（2026-11-20）
+
+两处目录都列举 registry 的全部技能定义，不按调用权限或 SKILL.md 路径筛除。磁盘操作能力与目录成员资格分开：runtime / 非 bundle 技能保留名字、描述、provider 与只读正文详情；只有合法 bundle 路径可编辑 frontmatter、系统编辑器打开或删除目录，组开关须把其它条目列入 skipped。导入冲突检测兼容 provider 技能没有 path 的情况。
+
+MCP 能力库合计为注册表条目与插件 loader 行的总和，显示来源分项，连接检测统计仅针对注册表。会话能力管理显示对应作用域的全量条目，包含全局停用的注册表和插件 MCP；其有效开启值为全局可用且会话策略允许。全局停用卡片开关置灰并指引去能力库启用，单项启用由宿主拒绝，bulk 开启不记录这些允许项；全关仍可清理旧允许项。工作区声明、pin 与精确 preset revision 保持原有隔离，跨作用域目录不要求机械相等，页面说明差异来源。
+
+验证以同一作用域下名称集合逐项相等为准，不能只核对总数。真实 provider 验证使用 Office / Badge / ACL 注册与 filesystem，真实 HTTP 与生产 React 视图在隔离数据上运行，不借操作用户真实开关来通过门禁。

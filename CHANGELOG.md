@@ -6,6 +6,11 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ### Fixed
 
+- **能力管理与能力库数量口径一致**：能力库不再按 SKILL.md 路径过滤目录，office / badge / ACL 等无 path 的 provider 技能也列入总数，以只读卡片和正文详情展示；磁盘启停、打开、删除仍只接受 bundle 技能。导入同名冲突检测兼容 runtime 技能，不把缺 path 当成异常。
+- **MCP 总数包含插件行与全局停用项**：能力库头部显示注册表 + 插件的合计及分项，探活计数明确仅指注册表。能力管理保留全局停用的注册表/插件条目，标明原因并禁止开启；批量开启跳过这些条目，单项请求也不能绕过全局关闭。会话工作区限定与其它 preset 的隔离不变，不强行凑同一个数字。
+- **验证**：回归先复现 Skill 4 对 10、MCP 头部 6 对列表 8 / 会话 7；真实宿主 SkillRegistry、Cordis scope 与 filesystem / Office / Badge / ACL provider 在隔离环境经生产 HTTP 路由验证 10 个 Skill、8 个 MCP 的名称集合一致，连续单项/批量开关不丢条目。生产客户端用独立 Chrome + React 18 验证两页总数、全局停用开关、运行时正文详情与 Office 展开更多，逐张判读截图；不写真实会话策略。
+
+
 - **会话技能卡片开关后消失**：会话影子注册现在保留原技能的路径、provider、资源定位和正文，仅修改调用权限；能力管理不再把没有 SKILL.md 路径的 runtime 技能过滤掉。连续开关 agent-notes、filesystem 技能及批量开关后，关闭项仍保留卡片、详情和再次开启入口，模型侧仍按策略禁止调用。
 - **兼容新宿主的 preset 作用域**：能力库与冷会话读取使用 acquireScope() 租约，并在完整读取结束后释放；旧宿主保留 standingKeyFor() 路径。存活会话优先读取自己继承的精确 preset revision，不混入其它 preset；影子读取附带 cwd，策略不变时也会检查新发现的技能。
 - **回归验证**：修正测试桩，使影子真正参与 list/get 的同名覆盖；新增连续单项开关、无路径 runtime 技能、延迟发现和 preset 租约生命周期断言。旧代码下先失败。隔离环境使用本机宿主真实 SkillRegistry、Cordis scope 与 FileSystemSkillProvider，真实 HTTP 单项/批量开关检查目录权限；生产 CapabilityView 在独立无头 Chrome + React 18 中实际渲染，开启、关闭和刷新后四张卡片均保留，截图已逐张判读。未修改用户会话策略，未重启正在运行的宿主。

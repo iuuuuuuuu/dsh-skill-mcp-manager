@@ -61,6 +61,7 @@ globalThis.fetch = async (url) => {
       ok: true, session: "sess-1", live: true,
       mcp: [
         { name: "reqable", source: "registry", owner: "", tier: "on-demand", transport: "stdio", toolCount: 46, enabled: true },
+        { name: "registry-stopped", source: "registry", tier: "disabled", transport: "stdio", enabled: false, globallyEnabled: false },
         { name: "sequential", source: "plugin", owner: "@acme/box", tier: "plugin", transport: "stdio", toolCount: 1, enabled: false },
         { name: "box-a", source: "plugin", owner: "@acme/box", tier: "plugin", transport: "stdio", toolCount: 0, enabled: true },
         { name: "box-b", source: "plugin", owner: "@acme/box", tier: "plugin", transport: "stdio", toolCount: 0, enabled: false },
@@ -79,6 +80,7 @@ globalThis.fetch = async (url) => {
   if (path.includes("/skills/import")) {
     return json({ ok: true, target: "/tmp/skills", cwd: "", warning: "", sources: [{ id: "user-agents", label: "~/.agents/skills", dir: "/h/.agents/skills", exists: true, skills: [{ name: "pebrel-runtime", dir: "/h/.agents/skills/pebrel-runtime", description: "fixture", blocked: false }] }] });
   }
+  if (path.includes("/skills/detail")) return json({ ok: true, name: "runtime-doc", provider: "runtime-doc", content: "# Runtime provider original content", description: "runtime fixture" });
   if (path.includes("/skills")) {
     return json({
       ok: true,
@@ -91,10 +93,11 @@ globalThis.fetch = async (url) => {
         { name: "big-3", description: "三", path: "/c/3/SKILL.md", directory: "/c", provider: "big", modelInvocable: true, userInvocable: true, readonly: true, origin: { kind: "plugin", key: "big", label: "big", provider: "big", package: "@acme/big", runtime: false } },
         { name: "big-4", description: "四", path: "/c/4/SKILL.md", directory: "/c", provider: "big", modelInvocable: true, userInvocable: true, readonly: true, origin: { kind: "plugin", key: "big", label: "big", provider: "big", package: "@acme/big", runtime: false } },
         { name: "big-5", description: "五", path: "/c/5/SKILL.md", directory: "/c", provider: "big", modelInvocable: true, userInvocable: true, readonly: true, origin: { kind: "plugin", key: "big", label: "big", provider: "big", package: "@acme/big", runtime: false } },
+        { name: "runtime-doc", description: "运行时文档", path: "", directory: "", provider: "runtime-doc", modelInvocable: true, readonly: true },
       ],
     });
   }
-  if (path.includes("/mcp")) return json({ entries: [], native: { supported: true, entries: [] } });
+  if (path.includes("/mcp")) return json({ entries: [{ id: "registry-stopped", name: "registry-stopped", tier: "disabled", transport: "stdio", tools: [] }], native: { supported: true, entries: [{ id: "plugin-stopped", serverName: "plugin-stopped", owner: "fixture-plugin", enabled: false, transport: "stdio" }] } });
   return json({ ok: true, customRecursiveDirs: [] });
 };
 
@@ -222,6 +225,7 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
   if (tabLabel === "mcp") {
     check(findText(tree, "全部检测").length > 0, "the MCP tab must render its toolbar");
     check(findText(tree, "新增 MCP").length > 0, "the MCP tab must offer 新增 MCP");
+    check(findText(tree, "2 个服务器").length > 0, "library MCP total must count registry AND plugin entries");
   } else {
     check(findText(tree, "新建分组").length > 0, "the skills tab must render the group tools");
     check(findText(tree, "导入本地技能").length > 0, "the skills tab must render the import button");
@@ -231,6 +235,8 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
     check(findText(tree, "展开更多 5 个").length > 0, "an overflowing plugin group must offer 展开更多, got " + findText(tree, "展开更多").length);
     check(findText(tree, "big-5").length === 0, "the fifth card must stay out of the page until 展开更多");
     check(findText(tree, "big-3").length > 0, "the first row of cards stays on the page");
+    check(findText(tree, "运行时技能，由插件管理").length > 0, "runtime skills must be described as provider-managed, not shipped files");
+    check(findText(tree, "详情").length > 0, "runtime skills need a read-only detail action");
   }
 }
 // 2) the conversation view builds, then builds again with the fetched data —
@@ -251,6 +257,7 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
     check(findText(tree, "插件 · @acme/box").length > 0, "a plugin group must be rendered");
     check(findText(tree, "全部开启").length >= 2, "both kinds need their own bulk switch, got " + findText(tree, "全部开启").length);
     check(findText(tree, "reqable").length > 0, "a registry tile must be rendered");
+    check(findText(tree, "全局停用（先在能力库启用）").length > 0, "globally stopped cards must explain availability rather than disappear");
     check(findText(tree, "详情").length >= 2, "every card must offer 详情, got " + findText(tree, "详情").length);
     check(findText(tree, "记录设计决策").length > 0, "a skill card must show its description");
     console.log("view checks (folded defaults) done");
@@ -276,6 +283,33 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
     check(findText(tree, "清除默认").length > 0, "the workspace default must be clearable from the view");
     check(findText(tree, "新对话默认：").length > 0, "the view must show the workspace default state");
   }
+}
+
+// Runtime provider skill details are fetched by the actual card click handler.
+{
+  const nodes = (tree, predicate, result = []) => {
+    if (!tree || typeof tree !== "object") return result;
+    if (predicate(tree)) result.push(tree);
+    for (const child of tree.children ?? []) nodes(child, predicate, result);
+    return result;
+  };
+  for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
+  stateOverrides["ManagerSection:0"] = "skills";
+  const props = panel.options.inject ? panel.options.inject() : {};
+  renderComponent("runtime detail initial", panel.component, props);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  let tree = renderComponent("runtime detail ready", panel.component, props, true);
+  const card = nodes(tree, (node) => node.props["data-cap-name"] === "runtime-doc")[0];
+  check(card !== undefined, "runtime skill must have its own library card");
+  check(nodes(card, (node) => node.props.role === "switch").length === 0, "runtime card must not offer a filesystem model toggle");
+  check(nodes(card, (node) => node.type === "button" && node.children.includes("删除")).length === 0, "runtime card must not offer directory deletion");
+  const detail = nodes(card, (node) => node.type === "button" && node.children.includes("详情"))[0];
+  if (detail) await detail.props.onClick();
+  else check(false, "runtime detail click handler must exist");
+  tree = renderComponent("runtime detail opened", panel.component, props, true);
+  check(findText(tree, "# Runtime provider original content").length > 0, "runtime detail click must fetch and display the provider body");
+  check(nodes(tree, (node) => node.props.role === "dialog").length === 1, "runtime skill detail must use the shared modal");
+  delete stateOverrides["ManagerSection:0"];
 }
 
 // 3) Real component event handlers: click authorization, show its waiting card,

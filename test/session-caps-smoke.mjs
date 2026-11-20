@@ -62,11 +62,12 @@ const liveSkillsService = {
 
 // One plugin-mounted MCP row: the desktop app's loader owns these, so the plugin can
 // only refuse their calls per conversation, never unmount them.
+let pluginEnabled = true;
 const fakeLoader = {
   entries() {
     return [{
       id: "mcp-sequential",
-      disabled: false,
+      disabled: !pluginEnabled,
       update() {},
       options: { name: "@deepseek-ai/dsh-mcp-client", id: "mcp-sequential", config: { transport: "stdio", serverName: "sequential", command: "node", args: [] } },
     }];
@@ -244,8 +245,8 @@ const agent = makeAgent("sess-1");
   const res = await caps("GET", { session: "sess-1" });
   console.log("initial:", JSON.stringify({ mcp: res.body.mcp?.map((m) => m.name + ":" + m.enabled), skills: res.body.skills?.map((s) => s.name + ":" + s.enabled) }));
   check(res.status === 200, "GET session-caps must answer 200");
-  check(!(res.body.mcp ?? []).some((m) => m.name === "beta"), "a globally disabled entry must not appear");
-  check((res.body.mcp ?? []).length === 3, "registry + plugin + workspace rows must all be listed, got " + JSON.stringify((res.body.mcp ?? []).map((m) => m.name)));
+  check(res.body.mcp?.some((m) => m.name === "beta" && m.globallyEnabled === false && m.enabled === false), "globally disabled registry MCP must remain visible but unavailable");
+  check((res.body.mcp ?? []).length === 4, "registry + plugin + workspace rows must all be listed, got " + JSON.stringify((res.body.mcp ?? []).map((m) => m.name)));
   check((res.body.mcp ?? []).some((m) => m.source === "workspace" && m.name === "ws-server"), "the workspace-declared server must be listed");
   const pluginRow = (res.body.mcp ?? []).find((m) => m.source === "plugin");
   check(pluginRow !== undefined && pluginRow.name === "sequential", "the plugin-mounted row must be listed by its server name");
@@ -295,9 +296,45 @@ const agent = makeAgent("sess-1");
     check(await runtimeAgent.guards[0]({ name: "skill", arguments: { name: "runtime-help" } }, async () => "allow") === (enabled ? "allow" : "deny"),
       "runtime skill invocation boundary must follow switch");
   }
+  const library = makeRes();
+  await routeByPath("/skill-mcp-manager/skills").handler(makeReq("GET", "/skill-mcp-manager/skills"), library);
+  const libraryRuntime = bodyOf(library).skills?.find((s) => s.name === "runtime-help");
+  check(libraryRuntime?.path === "" && libraryRuntime?.readonly === true, "library must include pathless runtime skills as read-only instead of dropping them");
+  check(libraryRuntime?.provider === "runtime-fixture", "runtime skill origin must survive library projection");
+  const detail = makeRes();
+  await routeByPath("/skill-mcp-manager/skills/detail").handler(makeReq("GET", "/skill-mcp-manager/skills/detail?name=runtime-help"), detail);
+  check(detail.status === 200 && bodyOf(detail).content === "# runtime", "runtime read-only detail must use the provider's actual content");
+  const skipped = makeRes();
+  await routeByPath("/skill-mcp-manager/skills/toggle-group").handler(makeReq("POST", "/skill-mcp-manager/skills/toggle-group", { provider: "runtime-fixture", enabled: false }), skipped);
+  check(skipped.status === 200 && bodyOf(skipped).skipped?.includes("runtime-help"), "runtime-only group must be reported as read-only, not written or missing");
+  for (const action of ["toggle", "open", "delete"]) {
+    const denied = makeRes();
+    await routeByPath("/skill-mcp-manager/skills/" + action).handler(makeReq("POST", "/skill-mcp-manager/skills/" + action, { name: "runtime-help", enabled: false }), denied);
+    check(denied.status === 400, "a runtime skill must not reach filesystem " + action);
+  }
+
   await caps("POST", { session: "runtime-probe", kind: "skills", name: "runtime-help", enabled: true });
   check(!activeShadows.get(runtimeAgent)?.has("runtime-help"), "enabling runtime skill must dispose its policy shadow");
   delete skills["runtime-help"];
+}
+
+// Library and management list the same global MCP names, including stopped entries.
+{
+  const library = makeRes();
+  await routeByPath("/skill-mcp-manager/mcp").handler(makeReq("GET", "/skill-mcp-manager/mcp"), library);
+  const body = bodyOf(library);
+  const libraryNames = [...body.entries.map((x) => x.name), ...(body.native?.entries ?? []).map((x) => x.serverName)].sort();
+  const sessionNames = (await caps("GET", { session: "sess-1" })).body.mcp.filter((x) => x.source !== "workspace").map((x) => x.name).sort();
+  check(JSON.stringify(libraryNames) === JSON.stringify(sessionNames), "same-scope MCP inventories must match, got " + JSON.stringify({ libraryNames, sessionNames }));
+  const stopped = await caps("POST", { session: "sess-1", kind: "mcp", name: "beta", enabled: true });
+  check(stopped.status === 400, "conversation switch must not enable a globally stopped MCP");
+  pluginEnabled = false;
+  const disabled = (await caps("GET", { session: "sess-1" })).body.mcp.find((x) => x.name === "sequential");
+  check(disabled?.globallyEnabled === false && disabled.enabled === false, "stopped plugin MCP must stay listed and unavailable");
+  const on = await caps("POST", { session: "sess-1", kind: "mcp", name: "sequential", enabled: true });
+  check(on.status === 400, "conversation switch must not enable a globally stopped plugin MCP");
+  pluginEnabled = true;
+
 }
 
 // 2) turning one MCP server on mounts it into the catalog; mcp_load follows
@@ -358,7 +395,8 @@ const agent = makeAgent("sess-1");
   const bulk = await caps("POST", { session: "sess-1", kind: "mcp", bulk: true, enabled: true });
   console.log("bulk mcp on ->", bulk.status, JSON.stringify({ mcp: bulk.body.mcp?.map((m) => m.name + ":" + m.enabled), skills: bulk.body.skills?.map((s) => s.name + ":" + s.enabled) }));
   check(bulk.status === 200, "bulk must answer 200");
-  check((bulk.body.mcp ?? []).every((m) => m.enabled === true), "bulk mcp on must enable every MCP server");
+  check((bulk.body.mcp ?? []).every((m) => m.enabled === (m.name !== "beta")), "bulk mcp on must leave globally disabled servers unavailable");
+  check(!(JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"))["sess-1"]?.mcp ?? []).includes("beta"), "bulk enable must not persist a grant for globally disabled MCP");
   check((bulk.body.skills ?? []).filter((s) => s.enabled).map((s) => s.name).join(",") === "workspace-skill",
     "bulk mcp on must not change any skill (only the workspace-owned one was already on), got "
       + JSON.stringify((bulk.body.skills ?? []).filter((s) => s.enabled).map((s) => s.name)));
