@@ -4,6 +4,16 @@ All notable changes to dsh-skill-mcp-manager (能力库 / Capability) are docume
 
 ## [未发布]
 
+### Added
+
+- **新会话沿用能力库开关**：能力库顶部新增 opt-in 预设，开启后，新根会话创建时按库里当前开启的 MCP / 技能初始化，持久保存为独立会话策略。已有会话不改，已存工作区预设优先，子代理仍继承父会话；全局关闭 MCP、modelInvocable:false 技能不会被默认开启。项目声明的 MCP 基线保留。设置位于 settings.json，不新增安装配置。
+
+### Changed
+
+- **沿用 DSH 原生界面**：Button / Switch / Modal 直接复用宿主 ui-primitives，字体、浅深色、圆角、遮罩与投影用宿主 token；去掉密集边框、关闭态虚线与 hover 浮影，所有来源使用同一套轻量卡片。标签页按宿主下划线样式，常用操作与统计层次分开，插件安全设置收进原生弹窗。MCP 详情、新增和会话详情统一使用 Modal，旧宿主缺组件时保留兼容控件。
+- **验证**：真实原生组件与真实宿主 SkillRegistry / Cordis / filesystem / Office / Badge provider 在隔离环境联合跑；预设真实点击保存后创建新会话，检查实际技能目录并完成继承 MCP 的 initialize / tools/list / tools/call；已验证首轮前的会话目录、保存和清除工作区预设、旧空白会话不变、子代理继承，以及技能开关不等待文件监听即可用于新会话。浅色 / 深色 / 窄屏、详情 / 新增 / 导入 / 设置均实际打开，截图逐张判读；初始化缺失和前端假保存的故障注入均在行为断言变红。未操作用户真实开关或重启宿主。
+
+
 ### Fixed
 
 - **能力管理与能力库数量口径一致**：能力库不再按 SKILL.md 路径过滤目录，office / badge / ACL 等无 path 的 provider 技能也列入总数，以只读卡片和正文详情展示；磁盘启停、打开、删除仍只接受 bundle 技能。导入同名冲突检测兼容 runtime 技能，不把缺 path 当成异常。

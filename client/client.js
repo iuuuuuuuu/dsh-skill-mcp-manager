@@ -5,7 +5,19 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
   // HTTP routes mounted by lib/ui.js.
 
   const React = require("react");
-  const h = React.createElement;
+  // Host-owned controls share the shell's appearance, keyboard and modal behavior.
+  // Older shells do not expose this static module; their existing controls stay usable.
+  let DshUi = {};
+  try { DshUi = require("@deepseek-ai/dsh-client-ui-primitives") || {}; } catch { /* older host */ }
+  function h(type, props, ...children) {
+    if (type === "button" && DshUi.Button && /(?:^| )smx-btn(?: |$)/.test(props?.className || "")) {
+      const classes = props.className;
+      const variant = classes.includes("smx-btn--primary") ? "primary" : classes.includes("smx-btn--ghost") ? "ghost" : "outline";
+      return React.createElement(DshUi.Button, { ...props, size: "sm", variant,
+        className: "smx-native-button", "data-danger": classes.includes("smx-btn--danger") || undefined }, ...children);
+    }
+    return React.createElement(type, props, ...children);
+  }
   const { useState, useEffect, useCallback, useRef } = React;
 
   const name = "dsh-skill-mcp-manager";
@@ -45,10 +57,13 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
   function Switch(props) {
     const checked = props.checked === true;
     const disabled = props.disabled === true;
+    if (DshUi.Switch) return h(DshUi.Switch, { checked, disabled, onChange: props.onChange,
+      label: props.label || "切换能力", className: "smx-native-switch" });
     return h("button", {
       type: "button",
       role: "switch",
       "aria-checked": checked ? "true" : "false",
+      "aria-label": props.label || "切换能力",
       className: cx("smx-switch", checked && "is-on"),
       disabled,
       onClick: () => props.onChange(!checked),
@@ -196,6 +211,10 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
   }
 
   function Modal({ title, count, onClose, children }) {
+    if (DshUi.Modal) return h(DshUi.Modal, { open: true, title, closeLabel: "关闭", onClose,
+      className: "smx-native-modal", contentClassName: "smx-native-modal__content",
+      description: count === undefined || count === null ? undefined : count + " 个" },
+      h("div", { className: "smx-modal__body" }, children));
     return h("div", { className: "smx-modal", role: "dialog", "aria-label": title },
       h("div", { className: "smx-modal__scrim", onClick: onClose }),
       h("div", { className: "smx-modal__panel" },
@@ -495,9 +514,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
     const [confirming, setConfirming] = useState("");
-    // Which groups are unfolded. A missing key means "the default": 系统 is open,
-    // every plugin group starts folded — a plugin's skills are the exception,
-    // not the list the user came for.
+    // All groups start expanded. Plugin groups keep one row plus 展开更多.
     const [openGroups, setOpenGroups] = useState({});
     const [busyGroup, setBusyGroup] = useState("");
     // Which plugin group is opened in 展开更多 (its key), plus the MCP 新增 form.
@@ -2008,41 +2025,21 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               ),
               nativeSections,
             ),
-      opened
-        ? h("div", { className: "smx-drawer", role: "dialog", "aria-label": opened.name + " 详情" },
-            h("div", { className: "smx-drawer__scrim", onClick: () => { setDetail(""); setOutput(""); } }),
-            h("div", { className: "smx-drawer__panel" },
-              h("div", { className: "smx-drawer__head" },
-                h("span", { className: "smx-drawer__title" }, opened.name),
-                h(Badge, { tone: TIER_TONE[opened.tier] || "muted" }, TIER_LABEL[opened.tier] || opened.tier),
-                h("select", {
-                  className: "smx-select smx-select--tight",
-                  title: "只在这个工作区的对话里生效",
-                  value: opened.workspace || "",
-                  onChange: (event) => pinWorkspace(opened, event.target.value),
-                },
-                  h("option", { value: "" }, "全部工作区"),
-                  (workspaces || []).map((item) => h("option", { key: item.id, value: item.path }, "仅 " + (item.title || item.path))),
-                ),
-                h("button", { type: "button", className: "smx-btn", onClick: () => { setDetail(""); setOutput(""); } }, "关闭"),
-              ),
-              detailBlock(opened),
-            ),
-          )
-        : null,
+      opened ? h(Modal, { title: opened.name + " 详情", onClose: () => { setDetail(""); setOutput(""); } },
+        h("div", { className: "smx-detail__actions" },
+          h(Badge, { tone: TIER_TONE[opened.tier] || "muted" }, TIER_LABEL[opened.tier] || opened.tier),
+          h("select", { className: "smx-select", title: "只在这个工作区的对话里生效", value: opened.workspace || "",
+            onChange: (event) => pinWorkspace(opened, event.target.value) },
+            h("option", { value: "" }, "全部工作区"),
+            (workspaces || []).map((item) => h("option", { key: item.id, value: item.path }, "仅 " + (item.title || item.path)))),
+        ), detailBlock(opened)) : null,
       // 展开更多 for a plugin group, and the 新增 form.
       overflow === null ? null : h(Modal, {
         title: overflow.title,
         count: overflow.items.length,
         onClose: () => setOverflow(null),
       }, h("div", { className: "smx-cards" }, overflow.items.map(nativeCard))),
-      addOpen ? h("div", { className: "smx-drawer", role: "dialog", "aria-label": "新增 MCP" },
-        h("div", { className: "smx-drawer__scrim", onClick: () => setAddOpen(false) }),
-        h("div", { className: "smx-drawer__panel" },
-          h("div", { className: "smx-drawer__head" },
-            h("span", { className: "smx-drawer__title" }, "新增 MCP 服务器"),
-            h("button", { type: "button", className: "smx-btn", onClick: () => setAddOpen(false) }, "关闭"),
-          ),
+      addOpen ? h(Modal, { title: "新增 MCP 服务器", onClose: () => setAddOpen(false) },
           h("div", { className: "smx-form" },
             h("label", { className: "smx-form__row" },
               h("span", { className: "smx-form__label" }, "名称"),
@@ -2091,7 +2088,6 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
             ),
             h("span", { className: "smx-count" }, "注册前会真连一次、拉工具清单；连不上就不写进注册表。"),
           ),
-        ),
       ) : null,
       // 导入配置: paste any tool's MCP config JSON, see it pretty-printed and validated,
       // then import. Parsing is the host's, so preview and import agree.
@@ -2220,21 +2216,57 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     );
   }
 
+  function LibraryDefaults() {
+    const [enabled, setEnabled] = useState(false);
+    const [available, setAvailable] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState("");
+    useEffect(() => {
+      let cancelled = false;
+      getJson("/skill-mcp-manager/settings").then((data) => {
+        if (cancelled) return;
+        setEnabled(data.inheritLibraryDefaults === true);
+        setAvailable(typeof data.inheritLibraryDefaults === "boolean");
+      }).catch((err) => { if (!cancelled) setError(errText(err)); });
+      return () => { cancelled = true; };
+    }, []);
+    async function change(next) {
+      setBusy(true);
+      try {
+        const data = await postJson("/skill-mcp-manager/settings", { inheritLibraryDefaults: next });
+        if (typeof data.inheritLibraryDefaults !== "boolean") throw new Error("当前宿主尚不支持此预设，请更新并重启 DSH");
+        setEnabled(data.inheritLibraryDefaults);
+        setError("");
+      } catch (err) { setError(errText(err)); }
+      finally { setBusy(false); }
+    }
+    return h("section", { className: "smx-defaults", "aria-label": "新会话预设" },
+      h("div", { className: "smx-defaults__copy" },
+        h("div", { className: "smx-defaults__title" }, "新会话沿用能力库开关"),
+        h("p", { className: "smx-defaults__description" }, "创建新会话时，自动启用能力库中已开启的 MCP 和技能。已有会话不变；工作区预设优先，子代理继承父会话。"),
+        error ? h("p", { className: "smx-defaults__error", role: "alert" }, error) : null,
+        !available ? h("span", { className: "smx-count" }, "宿主尚不支持此预设时，更新并重启 DSH 后可用") : null,
+      ),
+      h(Switch, { checked: enabled, disabled: busy || !available, label: "新会话沿用能力库开关", onChange: change }),
+    );
+  }
+
   function ManagerSection() {
-    // MCP is what people come here for (and what the sidebar page opens on); the
-    // skill tab is one click away.
     const [tab, setTab] = useState("mcp");
+    const [settingsOpen, setSettingsOpen] = useState(false);
     return h("div", { className: "smx" },
       h("header", { className: "smx-header" },
-        h("h2", { className: "smx-title" }, "能力库 (Capability)"),
-        h("div", { className: "smx-subtitle" }, "管理 Agent 的 Skill 与 MCP"),
+        h("div", null,
+          h("h2", { className: "smx-title" }, "能力库"),
+          h("p", { className: "smx-subtitle" }, "管理 MCP 与技能，为新会话准备所需能力")),
+        h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => setSettingsOpen(true) }, "插件设置"),
       ),
-      h(PluginSettings),
+      h(LibraryDefaults),
+      settingsOpen ? h(Modal, { title: "插件设置", onClose: () => setSettingsOpen(false) }, h(PluginSettings)) : null,
       h(LegacySessionBanner),
-      // MCP first: it is the default view and the reason this page exists.
-      h("div", { className: "smx-tabs" },
-        h("button", { type: "button", className: cx("smx-tab", tab === "mcp" && "is-active"), onClick: () => setTab("mcp") }, "MCP"),
-        h("button", { type: "button", className: cx("smx-tab", tab === "skills" && "is-active"), onClick: () => setTab("skills") }, "技能"),
+      h("div", { className: "smx-tabs", role: "tablist", "aria-label": "能力类型" },
+        h("button", { type: "button", role: "tab", "aria-selected": tab === "mcp", className: cx("smx-tab", tab === "mcp" && "is-active"), onClick: () => setTab("mcp") }, "MCP"),
+        h("button", { type: "button", role: "tab", "aria-selected": tab === "skills", className: cx("smx-tab", tab === "skills" && "is-active"), onClick: () => setTab("skills") }, "技能"),
       ),
       tab === "skills" ? h(SkillsPanel) : h(McpPanel),
     );
@@ -2251,11 +2283,9 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [error, setError] = useState("");
     const [notice, setNotice] = useState("");
     const [busy, setBusy] = useState("");
-    // Plugin groups start folded, like the library page: the groups the user came
-    // for (my servers, the workspace, 系统) are open, a plugin's own rows are not.
+    // All conversation groups start expanded and keep every item manageable.
     const [openGroups, setOpenGroups] = useState({});
-    // Plugin groups are long and mostly off: they render as one-line rows, and the
-    // What a NEW conversation in this workspace starts with (saved from here).
+    // Explicit per-workspace defaults (independent of the library fallback).
     const [preset, setPreset] = useState(null);
     // 详情: what the row actually exposes (an MCP server's tools, a skill's body).
     const [detail, setDetail] = useState(null);
@@ -2274,14 +2304,19 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
 
     useEffect(() => { load(); }, [load]);
 
-    // The preset belongs to the workspace the conversation runs in.
+    // A saved empty preset is still a workspace override. Older hosts omit
+    // configured; keep their original display and clear action in that case.
+    const hasWorkspacePreset = preset !== null && preset.configured !== false;
+    const presetWorkspace = state?.workspace || "";
     useEffect(() => {
-      const workspace = state && typeof state.workspace === "string" ? state.workspace : "";
-      if (workspace === "") { setPreset(null); return; }
-      getJson("/skill-mcp-manager/workspace-defaults?workspace=" + encodeURIComponent(workspace))
-        .then((data) => setPreset(data))
-        .catch(() => setPreset(null));
-    }, [state]);
+      setPreset(null);
+      if (presetWorkspace === "") return;
+      let cancelled = false;
+      getJson("/skill-mcp-manager/workspace-defaults?workspace=" + encodeURIComponent(presetWorkspace))
+        .then((data) => { if (!cancelled) setPreset(data); })
+        .catch(() => {});
+      return () => { cancelled = true; };
+    }, [presetWorkspace]);
 
     async function openDetail(kind, name) {
       setDetailBusy(true);
@@ -2363,14 +2398,10 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
       }
     }
 
-    // Plugin-provided items use the SAME card as 能力库: dot · name · badge, a meta
-    // line, a sentence saying where the row comes from, its state, then the switch.
-    // One card per group is visible until 展开, so a plugin that brings twenty of
-    // them costs the page one card.
+    // The same card language is used for every source: name, description,
+    // source metadata and invocation state. No cards disappear on switch.
 
-    // The card, limited to one line of content: frame + name + meta + switch. A plugin
-    // usually brings a few things the user mostly leaves off, so they keep the card
-    // look (not a bare list row) and cost one line of height each.
+    // Invocation policy changes state, never the identity or inventory card.
     function tile(kind, item, meta, badge) {
       const key = kind + ":" + item.name;
       const running = busy === key || busy === "many:" + kind;
@@ -2528,9 +2559,9 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         ),
         h("div", { className: "smx-head__meta" },
           h("span", { className: "smx-count" }, state === null ? "" : "本对话开启 " + onCount + " / " + (mcp.length + skills.length)),
-          preset === null
-            ? h("span", { className: "smx-count" }, "新对话默认：跟随会话")
-            : h("span", { className: "smx-count" }, "新对话默认：" + (preset.mcp.length + preset.skills.length) + " 项"),
+          !hasWorkspacePreset
+            ? h("span", { className: "smx-count" }, "无工作区预设 · 新会话默认在能力库设置")
+            : h("span", { className: "smx-count" }, "工作区预设：" + (preset.mcp.length + preset.skills.length) + " 项"),
           h("button", {
             type: "button",
             className: "smx-btn",
@@ -2541,7 +2572,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
           h("button", {
             type: "button",
             className: "smx-btn",
-            disabled: busy !== "" || preset === null,
+            disabled: busy !== "" || !hasWorkspacePreset,
             onClick: () => savePreset("clear"),
           }, "清除默认"),
           h("button", { type: "button", className: "smx-btn", disabled: busy !== "", onClick: load }, "刷新"),
@@ -2576,18 +2607,10 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               },
               (item) => (item.provider ? "来源 " + item.provider : "来源未知"),
               (item) => (item.readonly ? "只读" : null)),
-          detail === null ? null : h("div", { className: "smx-drawer", role: "dialog", "aria-label": detail.name + " 详情" },
-        h("div", { className: "smx-drawer__scrim", onClick: () => setDetail(null) }),
-        h("div", { className: "smx-drawer__panel" },
-          h("div", { className: "smx-drawer__head" },
-            h("span", { className: "smx-drawer__title" }, detail.name),
+          detail === null ? null : h(Modal, { title: detail.name + " 详情", onClose: () => setDetail(null) },
             h(Badge, { tone: "muted" }, detail.kind === "mcp" ? "MCP" : "技能"),
-            h("button", { type: "button", className: "smx-btn", onClick: () => setDetail(null) }, "关闭"),
+            detail.kind === "mcp" ? mcpDetail(detail) : skillDetail(detail)),
           ),
-          detail.kind === "mcp" ? mcpDetail(detail) : skillDetail(detail),
-        ),
-      ),
-      ),
     );
   }
 
@@ -2621,56 +2644,53 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
 
   // ── CSS ──────────────────────────────────────────────────────────────────
   const CSS = [
-    ".smx { display:flex; flex-direction:column; gap:12px; min-width:0; }",
+    ".smx { display:flex; flex-direction:column; gap:20px; min-width:0; font-family:var(--dsw-font-family,inherit); font-size:13px; line-height:20px; color:var(--dsw-alias-label-primary); }",
     // Sidebar page: the host gives the panel the full main area and reserves a
     // top band for the frame; the body keeps a centered reading column and owns
     // its own scrolling.
     ".smx-page { display:flex; flex-direction:column; box-sizing:border-box; height:100%; min-height:0; padding-top:calc(28px + var(--dsh-frame-top-clearance,0px)); }",
     // The conversation view: the host gives it the panel body, so it owns padding
     // and scrolling like the page shell does.
-    ".smx-view { display:flex; flex-direction:column; gap:12px; box-sizing:border-box; height:100%; min-height:0; overflow:auto; padding:16px max(max(16px,min(4vw,48px)),50% - 480px) 24px; }",
+    ".smx-view { display:flex; flex-direction:column; gap:24px; box-sizing:border-box; height:100%; min-height:0; overflow:auto; padding:24px max(max(16px,min(4vw,48px)),50% - 480px) 32px; font-family:var(--dsw-font-family,inherit); font-size:13px; line-height:20px; color:var(--dsw-alias-label-primary); }",
     // Capability tiles in the conversation view: same card language as 能力库,
     // compact enough that both sections fit on one screen.
-    ".smx-cap-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:10px; }",
-    ".smx-cap { display:flex; flex-direction:column; gap:6px; min-width:0; padding:10px 12px; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); transition:border-color .12s ease, box-shadow .12s ease; }",
-    ".smx-cap:hover { border-color:var(--dsw-alias-border-l2); box-shadow:0 2px 12px rgba(0,0,0,.07); }",
-    ".smx-cap.is-off { background:var(--dsw-alias-bg-layer-2); border-style:dashed; }",
+    ".smx-cap-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(260px,100%),1fr)); gap:12px; }",
+    ".smx-cap { display:flex; flex-direction:column; gap:10px; min-width:0; padding:16px; border:.5px solid var(--dsw-alias-border-l2); border-radius:var(--dsw-radius-lg,16px); background:var(--dsw-alias-settings-card-fill,var(--dsw-alias-bg-layer-2)); }",
+    ".smx-cap:hover { border-color:var(--dsw-alias-border-l3); }",
+    ".smx-cap.is-off { border-style:solid; }",
     ".smx-cap__head { display:flex; align-items:center; gap:8px; min-width:0; }",
     ".smx-cap .smx-dot { margin-top:0; }",
-    ".smx-cap__name { flex:1; min-width:0; font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-cap__name { flex:1; min-width:0; font-size:14px; line-height:20px; font-weight:500; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
     // Two lines at most, so a chatty description never turns a card into a wall.
-    ".smx-cap__desc { font-size:11px; line-height:1.45; color:var(--dsw-alias-label-secondary); overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; word-break:break-word; }",
-    ".smx-cap__meta { font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
-    ".smx-cap__foot { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:auto; padding-top:6px; border-top:1px solid var(--dsw-alias-border-l1); }",
+    ".smx-cap__desc { font-size:12px; line-height:18px; color:var(--dsw-alias-label-secondary); overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; word-break:break-word; }",
+    ".smx-cap__meta { font-size:11px; line-height:16px; color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary)); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-cap__foot { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-top:auto; padding-top:4px; }",
     ".smx-cap__hint { font-size:11px; color:var(--dsw-alias-label-secondary); }",
     // Groups inside a conversation section (my servers / one per plugin): a quiet
     // sub-header, not another card frame.
-    ".smx-capgroups { display:flex; flex-direction:column; gap:12px; }",
-    ".smx-capgroup { display:flex; flex-direction:column; gap:8px; }",
-    ".smx-capgroup__head { display:flex; align-items:center; gap:8px; }",
-    ".smx-capgroup__title { font-size:12px; font-weight:600; color:var(--dsw-alias-label-secondary); }",
+    ".smx-capgroups { display:flex; flex-direction:column; gap:20px; }",
+    ".smx-capgroup { display:flex; flex-direction:column; gap:10px; }",
+    ".smx-capgroup__head { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }",
+    ".smx-capgroup__title { font-size:13px; font-weight:500; color:var(--dsw-alias-label-secondary); }",
     ".smx-capgroup__count { font-size:11px; color:var(--dsw-alias-label-secondary); }",
-    ".smx-capgroup__actions { display:flex; align-items:center; gap:4px; }",
-    // A plugin card keeps its frame but carries one line of content; 展开 puts every
-    // card into one fixed-height scrolling box, so the page never grows with the
-    // number of items a plugin brings.
+    ".smx-capgroup__actions { display:flex; align-items:center; gap:2px; margin-left:auto; }",
     // The group header is a fold toggle (the chevron is the library page's).
     ".smx-capgroup__toggle { display:flex; align-items:center; gap:5px; padding:0; border:0; background:none; cursor:pointer; color:inherit; font:inherit; }",
     ".smx-page__body { display:flex; flex-direction:column; flex:1; min-height:0; overflow:auto; padding-bottom:28px; padding-left:max(max(16px,min(4vw,48px)),50% - 480px); padding-right:max(max(16px,min(4vw,48px)),50% - 480px); }",
-    ".smx-head { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; }",
-    ".smx-title { margin:0; font-size:15px; font-weight:600; color:var(--dsw-alias-label-primary); }",
-    ".smx-head__meta { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }",
-    ".smx-setting { display:flex; align-items:center; gap:8px; padding:8px 10px; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-bg-layer-1); }",
-    ".smx-setting--block { flex-direction:column; align-items:stretch; gap:10px; }",
-    ".smx-setting__row { display:flex; align-items:center; gap:8px; min-width:0; flex-wrap:wrap; }",
+    ".smx-head { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }",
+    ".smx-title { margin:0; font-size:20px; line-height:28px; font-weight:600; color:var(--dsw-alias-label-primary); }",
+    ".smx-head__meta { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }",
+    ".smx-setting { display:flex; align-items:center; gap:12px; padding:0; border:0; background:transparent; }",
+    ".smx-setting--block { flex-direction:column; align-items:stretch; gap:20px; }",
+    ".smx-setting__row { display:flex; align-items:center; justify-content:space-between; gap:12px; min-width:0; flex-wrap:wrap; }",
     // One form grid for the library modals: same label column, same control height, so
     // no field is wider than the one beside it.
-    ".smx-form { display:flex; flex-direction:column; gap:10px; min-width:0; }",
-    ".smx-form__row { display:grid; grid-template-columns:132px minmax(0,1fr); align-items:center; gap:10px; }",
+    ".smx-form { display:flex; flex-direction:column; gap:16px; min-width:0; }",
+    ".smx-form__row { display:grid; grid-template-columns:112px minmax(0,1fr); align-items:center; gap:12px; }",
     ".smx-form__row--stack { align-items:start; }",
-    ".smx-form__label { font-size:12px; color:var(--dsw-alias-label-secondary); text-align:right; }",
+    ".smx-form__label { font-size:13px; line-height:20px; color:var(--dsw-alias-label-secondary); text-align:left; }",
     ".smx-form__row--stack .smx-form__label { padding-top:6px; }",
-    ".smx-form input, .smx-form select { width:100%; font-size:12px; height:30px; padding:0 8px; border-radius:6px; border:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); }",
+    ".smx-form input, .smx-form select { box-sizing:border-box; min-width:0; width:100%; font:inherit; font-size:13px; height:34px; padding:0 10px; border-radius:var(--dsw-radius-sm,8px); border:.5px solid var(--dsw-alias-border-l3); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); }",
     ".smx-form select { cursor:pointer; }",
     ".smx-form__row > .smx-btn { justify-self:start; }",
     ".smx-form__actions { display:flex; align-items:center; gap:8px; padding-top:2px; }",
@@ -2679,91 +2699,82 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-form__error { color:var(--dsw-alias-state-error-primary); }",
     ".smx-form__ok { color:var(--dsw-alias-label-secondary); }",
     ".smx-form__path { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
-    ".smx-textarea { width:100%; min-height:200px; resize:vertical; font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:11px; line-height:1.55; padding:8px 10px; border-radius:8px; border:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); white-space:pre; overflow:auto; }",
+    ".smx-textarea { box-sizing:border-box; width:100%; min-height:200px; resize:vertical; font-family:var(--ds-font-family-code,monospace); font-size:12px; line-height:1.6; padding:12px; border-radius:var(--dsw-radius-md,12px); border:.5px solid var(--dsw-alias-border-l3); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); white-space:pre; overflow:auto; }",
     ".smx-setting__save { display:flex; justify-content:flex-end; align-items:center; gap:8px; }",
-    ".smx-setting__label { flex:none; white-space:nowrap; font-size:12px; color:var(--dsw-alias-label-secondary); }",
-    ".smx-input { font-size:12px; padding:5px 8px; border-radius:6px; border:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); width:72px; }",
+    ".smx-setting__label { flex:none; white-space:nowrap; font-size:13px; color:var(--dsw-alias-label-primary); }",
+    ".smx-input { box-sizing:border-box; min-width:0; width:88px; height:32px; font:inherit; font-size:13px; padding:0 10px; border-radius:var(--dsw-radius-sm,8px); border:.5px solid var(--dsw-alias-border-l3); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); }",
     ".smx-input--wide { width:auto; flex:1; min-width:0; }",
-    ".smx-count { font-size:12px; color:var(--dsw-alias-label-secondary); }",
-    ".smx-btn { font-size:12px; line-height:1; padding:6px 10px; border-radius:6px; border:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); cursor:pointer; }",
-    ".smx-btn:hover { border-color:var(--dsw-alias-brand-primary); color:var(--dsw-alias-brand-primary); }",
+    ".smx-count { font-size:12px; line-height:18px; color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary)); }",
+    ".smx-btn { box-sizing:border-box; display:inline-flex; align-items:center; justify-content:center; min-height:28px; gap:4px; font:inherit; font-size:12px; line-height:18px; padding:0 10px; border-radius:var(--dsw-radius-sm,8px); border:.5px solid var(--dsw-alias-border-l3); background:transparent; color:var(--dsw-alias-label-primary); cursor:pointer; text-decoration:none; }",
+    ".smx-btn:hover { background:var(--dsw-alias-interactive-bg-hover); }",
     ".smx-btn:disabled { opacity:.55; cursor:default; }",
-    ".smx-btn:disabled:hover { border-color:var(--dsw-alias-border-l2); color:var(--dsw-alias-label-primary); }",
-    ".smx-btn--ghost { border-color:var(--dsw-alias-border-l1); color:var(--dsw-alias-label-secondary); }",
-    ".smx-btn--danger { border-color:var(--dsw-alias-state-error-primary); color:var(--dsw-alias-state-error-primary); }",
-    ".smx-btn--primary { border-color:var(--dsw-alias-brand-primary); color:var(--dsw-alias-brand-primary); }",
-    ".smx-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:10px; align-items:stretch; }",
-    // Groups: one header row per origin. The plugin groups start folded and own a
-    // master switch; 系统 has neither, because it is the list itself.
-    ".smx-groups { display:flex; flex-direction:column; gap:14px; }",
-    ".smx-group { display:flex; flex-direction:column; gap:8px; min-width:0; }",
-    ".smx-group__head { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 8px; border:1px solid var(--dsw-alias-border-l1); border-radius:10px; background:var(--dsw-alias-bg-layer-2); }",
+    ".smx-btn:disabled:hover { background:transparent; }",
+    ".smx-btn--ghost { border-color:transparent; color:var(--dsw-alias-label-secondary); }",
+    ".smx-btn--danger { color:var(--dsw-alias-state-error-primary); }",
+    ".smx-btn--primary { border-color:transparent; background:var(--dsw-alias-button-primary-fill,var(--dsw-alias-brand-primary)); color:var(--dsw-alias-label-primary-foreground); }",
+    ".smx-cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(260px,100%),1fr)); gap:12px; align-items:stretch; }",
+    // Quiet origin headings; all groups share the same cards and start expanded.
+    ".smx-groups { display:flex; flex-direction:column; gap:24px; }",
+    ".smx-group { display:flex; flex-direction:column; gap:12px; min-width:0; }",
+    ".smx-group__head { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:32px; padding:0; border:0; background:transparent; flex-wrap:wrap; }",
     ".smx-group--system > .smx-group__head { background:transparent; }",
     ".smx-group__toggle { display:flex; align-items:center; gap:8px; flex:1; min-width:0; padding:0; border:none; background:none; color:inherit; cursor:pointer; text-align:left; }",
     ".smx-group__chevron { display:inline-block; flex:none; font-size:10px; color:var(--dsw-alias-label-secondary); transition:transform .12s ease; }",
     ".smx-group__chevron.is-open { transform:rotate(90deg); }",
-    ".smx-group__title { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
-    ".smx-group__count { flex:none; font-size:11px; color:var(--dsw-alias-label-secondary); }",
+    ".smx-group__title { font-size:14px; line-height:22px; font-weight:500; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-group__count { flex:none; font-size:12px; line-height:18px; color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary)); }",
     ".smx-group__sub { font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
     ".smx-group__switch { display:flex; align-items:center; gap:6px; flex:none; }",
-    ".smx-card { display:flex; flex-direction:column; gap:8px; min-width:0; padding:12px; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); transition:border-color .12s ease, box-shadow .12s ease; }",
-    ".smx-card:hover { border-color:var(--dsw-alias-border-l2); box-shadow:0 2px 12px rgba(0,0,0,.07); }",
-    ".smx-card.is-readonly { border-style:dashed; }",
+    ".smx-card { display:flex; flex-direction:column; gap:10px; min-width:0; padding:16px; border:.5px solid var(--dsw-alias-border-l2); border-radius:var(--dsw-radius-lg,16px); background:var(--dsw-alias-settings-card-fill,var(--dsw-alias-bg-layer-2)); }",
+    ".smx-card:hover { border-color:var(--dsw-alias-border-l3); }",
+    ".smx-card.is-readonly { border-style:solid; }",
     // While dragging (SortableJS): the card being moved fades, its placeholder stays put.
     ".smx-card--ghost { opacity:.45; border-style:dashed; background:var(--dsw-alias-bg-layer-2); }",
     "[data-sort-kind] [data-cap-name] { cursor:grab; }",
     "[data-sort-kind] [data-cap-name]:active { cursor:grabbing; }",
     ".smx-card.is-dimmed .smx-card__name { color:var(--dsw-alias-label-secondary); }",
     ".smx-card__head { display:flex; align-items:flex-start; gap:8px; min-width:0; }",
-    ".smx-mark { flex:none; display:inline-flex; align-items:center; justify-content:center; width:26px; height:26px; border-radius:8px; font-size:10px; font-weight:700; letter-spacing:.02em; color:var(--dsw-alias-brand-primary); background:var(--dsw-alias-bg-layer-2); border:1px solid var(--dsw-alias-border-l1); }",
+    ".smx-mark { flex:none; display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:var(--dsw-radius-sm,8px); font-size:11px; font-weight:500; color:var(--dsw-alias-label-secondary); background:var(--dsw-alias-interactive-bg-hover); }",
     ".smx-card__ident { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }",
-    ".smx-card__name { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
-    ".smx-card__sub { font-size:11px; color:var(--dsw-alias-label-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
-    ".smx-card__desc { margin:0; font-size:12px; line-height:1.5; color:var(--dsw-alias-label-secondary); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }",
-    // One line of content inside the library card frame; long prose ellipsises",
-    // A plugin card: 能力库's frame, clamped to one line of content (no wrapping —
-    // a long plugin description would otherwise stretch the card to three lines).
-    ".smx-card__desc.is-empty { font-style:italic; }",
+    ".smx-card__name { font-size:14px; line-height:20px; font-weight:500; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-card__sub { font-size:11px; line-height:16px; color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary)); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-card__desc { margin:0; font-size:12px; line-height:19px; color:var(--dsw-alias-label-secondary); display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }",
+    ".smx-card__desc.is-empty { color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary)); }",
     ".smx-card__status { display:flex; align-items:center; gap:6px; flex-wrap:wrap; font-size:11px; color:var(--dsw-alias-label-secondary); }",
     ".smx-card__hint { font-size:11px; color:var(--dsw-alias-label-secondary); }",
     ".smx-card__error { font-size:11px; line-height:1.45; color:var(--dsw-alias-state-error-primary); background:var(--dsw-alias-bg-layer-2); border-radius:6px; padding:6px 8px; max-height:76px; overflow:auto; word-break:break-word; }",
-    ".smx-card__foot { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:auto; padding-top:8px; border-top:1px solid var(--dsw-alias-border-l1); }",
-    ".smx-card__actions { display:flex; align-items:center; gap:6px; }",
+    ".smx-card__foot { display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap; margin-top:auto; padding-top:4px; }",
+    ".smx-card__actions { display:flex; align-items:center; gap:4px; flex-wrap:wrap; }",
     ".smx-dot { flex:none; width:8px; height:8px; margin-top:6px; border-radius:50%; background:var(--dsw-alias-border-l2); }",
     ".smx-dot--ok { background:var(--dsw-alias-state-success-primary); }",
     ".smx-dot--fail { background:var(--dsw-alias-state-error-primary); }",
     ".smx-dot--busy { background:var(--dsw-alias-brand-primary); animation:smx-pulse 1s ease-in-out infinite; }",
     "@keyframes smx-pulse { 0%,100% { opacity:1; } 50% { opacity:.3; } }",
-    ".smx-settings-card { display:flex; flex-direction:column; gap:8px; padding:10px 12px; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-1); }",
+    ".smx-settings-card { display:flex; flex-direction:column; gap:12px; padding:16px; border:.5px solid var(--dsw-alias-border-l2); border-radius:var(--dsw-radius-lg,16px); background:var(--dsw-alias-settings-card-fill,var(--dsw-alias-bg-layer-2)); }",
     ".smx-settings-card__title { font-size:12px; font-weight:600; color:var(--dsw-alias-label-secondary); }",
     ".smx-settings-card__toggle { display:flex; align-items:center; justify-content:space-between; gap:8px; width:100%; padding:0; border:none; background:none; cursor:pointer; }",
     ".smx-settings-card__body { display:flex; flex-direction:column; gap:8px; }",
     // Centered overlay panel (was a right-side drawer): nothing stays docked to an edge.
-    ".smx-drawer__scrim { position:absolute; inset:0; background:rgba(0,0,0,.28); }",
-    ".smx-drawer { position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center; padding:24px; }",
-    ".smx-drawer__panel { position:relative; display:flex; flex-direction:column; gap:10px; width:min(720px,100%); max-height:min(86vh,860px); overflow:auto; padding:18px; border-radius:16px; background:var(--dsw-alias-bg-layer-1); border:1px solid var(--dsw-alias-border-l1); box-shadow:0 20px 60px rgba(15,23,42,.24); }",
-    ".smx-drawer__head { display:flex; align-items:center; gap:8px; }",
-    ".smx-drawer__title { flex:1; font-size:14px; font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
-    ".smx-switchline { display:flex; align-items:center; gap:6px; }",
+    ".smx-switchline { display:flex; align-items:center; gap:8px; }",
     ".smx-switchline__label { font-size:12px; color:var(--dsw-alias-label-secondary); }",
-    ".smx-switch { position:relative; width:30px; height:17px; border-radius:999px; border:none; background:var(--dsw-alias-border-l2); cursor:pointer; padding:0; flex-shrink:0; }",
+    ".smx-switch { box-sizing:border-box; position:relative; width:36px; height:20px; border-radius:999px; border:0; background:var(--dsw-alias-border-l3); cursor:pointer; padding:2px; flex-shrink:0; }",
     ".smx-switch.is-on { background:var(--dsw-alias-brand-primary); }",
-    ".smx-switch__knob { position:absolute; top:2px; left:2px; width:13px; height:13px; border-radius:50%; background:#fff; transition:left .12s ease; }",
-    ".smx-switch.is-on .smx-switch__knob { left:15px; }",
-    ".smx-badge { font-size:10px; padding:2px 6px; border-radius:999px; border:1px solid var(--dsw-alias-border-l2); color:var(--dsw-alias-label-secondary); white-space:nowrap; }",
+    ".smx-switch__knob { position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:var(--dsw-alias-label-primary-foreground); transition:transform .12s ease; }",
+    ".smx-switch.is-on .smx-switch__knob { transform:translateX(16px); }",
+    ".smx-badge { font-size:10px; line-height:16px; padding:1px 6px; border-radius:var(--dsw-radius-xs,4px); border:0; color:var(--dsw-alias-label-secondary); background:var(--dsw-alias-interactive-bg-hover); white-space:nowrap; }",
     ".smx-badge--success { color:var(--dsw-alias-state-success-primary); border-color:var(--dsw-alias-state-success-primary); }",
     ".smx-badge--info { color:var(--dsw-alias-brand-primary); border-color:var(--dsw-alias-brand-primary); }",
     ".smx-badge--muted { color:var(--dsw-alias-label-secondary); border-color:var(--dsw-alias-border-l1); }",
-    ".smx-notice { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:8px 10px; border-radius:6px; font-size:12px; border:1px solid var(--dsw-alias-border-l1); background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); }",
-    ".smx-notice--success { border-color:var(--dsw-alias-state-success-primary); }",
-    ".smx-notice--error { border-color:var(--dsw-alias-state-error-primary); color:var(--dsw-alias-state-error-primary); }",
+    ".smx-notice { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:12px; border-radius:var(--dsw-radius-md,12px); font-size:12px; line-height:18px; border:0; background:var(--dsw-alias-settings-card-fill,var(--dsw-alias-bg-layer-2)); color:var(--dsw-alias-label-primary); }",
+    ".smx-notice--success { color:var(--dsw-alias-label-primary); }",
+    ".smx-notice--error { color:var(--dsw-alias-state-error-primary); }",
     ".smx-notice__close { border:none; background:none; color:inherit; cursor:pointer; font-size:14px; padding:0 2px; }",
     ".smx-legacy { display:flex; flex-direction:column; gap:4px; line-height:1.6; text-align:left; }",
     ".smx-legacy__title { font-weight:600; }",
     ".smx-legacy__code { font-family:var(--ds-font-family-code); font-size:11px; padding:1px 4px; border-radius:4px; background:var(--dsw-alias-bg-layer-2); }",
     ".smx-legacy__link { color:var(--dsw-alias-brand-primary); }",
     ".smx-legacy__note { color:var(--dsw-alias-label-secondary); }",
-    ".smx-toast { position:absolute; right:16px; bottom:16px; display:flex; align-items:flex-start; gap:10px; max-width:360px; padding:10px 12px; border-radius:10px; border:1px solid var(--dsw-alias-state-error-primary); background:var(--dsw-alias-bg-layer-1); box-shadow:0 8px 28px rgba(0,0,0,.18); pointer-events:auto; }",
+    ".smx-toast { position:absolute; right:16px; bottom:16px; display:flex; align-items:flex-start; gap:10px; max-width:360px; padding:14px 16px; border-radius:var(--dsw-radius-lg,16px); border:0; background:var(--dsw-alias-toast-bg,var(--dsw-alias-bg-layer-2)); color:var(--dsw-alias-toast-label,var(--dsw-alias-label-primary)); box-shadow:var(--dsw-elevation-panel); pointer-events:auto; }",
     ".smx-toast--checking { border-color:var(--dsw-alias-border-l2); }",
     ".smx-toast--ok { border-color:var(--dsw-alias-state-success-primary); }",
     ".smx-oauth-card { display:flex; flex-direction:column; align-items:center; gap:12px; padding:28px 20px; text-align:center; border:1px solid var(--dsw-alias-border-l1); border-radius:12px; background:var(--dsw-alias-bg-layer-2); }",
@@ -2779,24 +2790,24 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-toast__title { font-size:13px; font-weight:600; color:var(--dsw-alias-label-primary); }",
     ".smx-toast__text { margin-top:4px; font-size:12px; color:var(--dsw-alias-label-secondary); }",
     ".smx-toast__close { border:none; background:none; color:var(--dsw-alias-label-secondary); cursor:pointer; font-size:15px; line-height:1; padding:0 2px; }",
-    ".smx-empty { padding:18px; text-align:center; font-size:12px; color:var(--dsw-alias-label-secondary); }",
+    ".smx-empty { padding:28px 16px; text-align:center; font-size:13px; line-height:20px; color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary)); }",
     ".smx-confirm { display:inline-flex; gap:6px; align-items:center; }",
-    ".smx-detail { display:flex; flex-direction:column; gap:8px; }",
-    ".smx-detail__section { display:flex; flex-direction:column; gap:4px; }",
-    ".smx-detail__label { font-size:11px; font-weight:600; color:var(--dsw-alias-label-secondary); }",
+    ".smx-detail { display:flex; flex-direction:column; gap:16px; }",
+    ".smx-detail__section { display:flex; flex-direction:column; gap:8px; }",
+    ".smx-detail__label { font-size:12px; font-weight:500; color:var(--dsw-alias-label-secondary); }",
     ".smx-detail__actions { display:flex; gap:8px; flex-wrap:wrap; }",
     // 详情 body (the conversation view): meta lines, prose, a tool list, and the raw
     // markdown of a skill.
     ".smx-detail__meta { font-size:11px; color:var(--dsw-alias-label-secondary); word-break:break-all; }",
-    ".smx-detail__text { margin:0; font-size:12px; line-height:1.5; color:var(--dsw-alias-label-primary); }",
+    ".smx-detail__text { margin:0; font-size:13px; line-height:21px; color:var(--dsw-alias-label-primary); }",
     ".smx-detail .smx-tool { flex-direction:column; align-items:flex-start; gap:1px; padding:4px 0; border-bottom:1px solid var(--dsw-alias-border-l1); }",
     ".smx-detail .smx-tool:last-child { border-bottom:0; }",
     ".smx-detail .smx-tool__name { font-size:12px; font-weight:600; }",
-    ".smx-pre { margin:0; padding:10px; border:1px solid var(--dsw-alias-border-l1); border-radius:8px; background:var(--dsw-alias-bg-layer-2); font-family:ui-monospace,SFMono-Regular,Consolas,monospace; font-size:11px; line-height:1.55; white-space:pre-wrap; word-break:break-word; max-height:60vh; overflow:auto; }",
+    ".smx-pre { margin:0; padding:14px; border:.5px solid var(--dsw-alias-border-l2); border-radius:var(--dsw-radius-md,12px); background:var(--dsw-alias-bg-layer-1); font-family:var(--ds-font-family-code,monospace); font-size:12px; line-height:1.6; white-space:pre-wrap; word-break:break-word; max-height:60vh; overflow:auto; }",
     ".smx-kv { display:flex; gap:8px; font-size:12px; }",
     ".smx-kv__k { flex-shrink:0; color:var(--dsw-alias-label-secondary); }",
     ".smx-kv__v { color:var(--dsw-alias-label-primary); word-break:break-all; }",
-    ".smx-select { font-size:12px; padding:5px 8px; border-radius:6px; border:1px solid var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); }",
+    ".smx-select { box-sizing:border-box; min-width:0; max-width:100%; font:inherit; font-size:12px; height:28px; padding:0 8px; border-radius:var(--dsw-radius-sm,8px); border:.5px solid var(--dsw-alias-border-l3); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); }",
     ".smx-select--tight { flex:none; font-size:11px; padding:3px 6px; }",
     // Skill groups + import sheet (④B, ①A): the group header carries its own
     // actions, and the sheet is a self-contained panel above the grid.
@@ -2804,15 +2815,15 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-group__actions { display:flex; align-items:center; gap:4px; flex:none; }",
     // 展开更多 — the whole plugin group in one scrollable panel over the page.
     ".smx-modal { position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center; padding:24px; }",
-    ".smx-modal__scrim { position:absolute; inset:0; background:rgba(15,23,42,.38); }",
-    ".smx-modal__panel { position:relative; display:flex; flex-direction:column; gap:12px; width:min(880px,100%); max-height:min(80vh,720px); padding:16px; border-radius:16px; background:var(--dsw-alias-bg-layer-1); border:1px solid var(--dsw-alias-border-l1); box-shadow:0 20px 60px rgba(15,23,42,.24); }",
+    ".smx-modal__scrim { position:absolute; inset:0; background:var(--dsw-alias-bg-mask-1); backdrop-filter:var(--dsw-mask-blur); }",
+    ".smx-modal__panel { box-sizing:border-box; position:relative; display:flex; flex-direction:column; gap:20px; width:min(800px,100%); max-height:min(86vh,860px); padding:24px; border-radius:var(--dsw-radius-panel,28px); background:var(--dsw-alias-bg-layer-2); border:0; box-shadow:var(--dsw-elevation-prominent); }",
     ".smx-modal__head { display:flex; align-items:center; gap:8px; }",
-    ".smx-modal__title { flex:1; min-width:0; font-size:14px; font-weight:600; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-modal__title { flex:1; min-width:0; font-size:16px; line-height:24px; font-weight:500; color:var(--dsw-alias-label-primary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
     ".smx-modal__body { min-height:0; overflow:auto; }",
     ".smx-head__inline { display:flex; align-items:center; gap:6px; flex:none; }",
     ".smx-input--inline { font-size:12px; padding:2px 6px; min-width:120px; }",
     ".smx-select--inline { flex:none; font-size:11px; padding:3px 6px; max-width:120px; }",
-    ".smx-import { display:flex; flex-direction:column; gap:8px; padding:12px 14px; border:1px solid var(--dsw-alias-brand-primary); border-radius:12px; background:var(--dsw-alias-bg-layer-1); }",
+    ".smx-import { display:flex; flex-direction:column; gap:12px; padding:0; border:0; background:transparent; }",
     ".smx-import__head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }",
     ".smx-import__title { font-size:13px; font-weight:600; }",
     ".smx-import__sub { font-size:11px; color:var(--dsw-alias-label-secondary); margin-top:2px; word-break:break-all; }",
@@ -2836,11 +2847,29 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-tool__desc { color:var(--dsw-alias-label-secondary); }",
     ".smx-tool.is-disabled .smx-tool__name, .smx-tool.is-disabled .smx-tool__desc { color:var(--dsw-alias-label-secondary); }",
     ".smx-output { margin:0; padding:8px; border-radius:6px; background:var(--dsw-alias-bg-layer-2); color:var(--dsw-alias-label-primary); font-size:11px; white-space:pre-wrap; word-break:break-word; max-height:220px; overflow:auto; }",
-    ".smx-header { display:flex; flex-direction:column; gap:2px; }",
-    ".smx-subtitle { font-size:12px; color:var(--dsw-alias-label-secondary); }",
-    ".smx-tabs { display:flex; gap:4px; border-bottom:1px solid var(--dsw-alias-border-l1); padding-bottom:8px; }",
-    ".smx-tab { font-size:12px; padding:6px 12px; border-radius:6px; border:1px solid transparent; background:none; color:var(--dsw-alias-label-secondary); cursor:pointer; }",
-    ".smx-tab.is-active { color:var(--dsw-alias-brand-primary); border-color:var(--dsw-alias-border-l2); background:var(--dsw-alias-bg-layer-1); }",
+    ".smx-header { display:flex; align-items:flex-start; justify-content:space-between; gap:16px; }",
+    ".smx-subtitle { margin:6px 0 0; font-size:13px; line-height:20px; color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary)); max-width:760px; }",
+    ".smx-tabs { display:flex; gap:24px; border-bottom:.5px solid var(--dsw-alias-border-l2); }",
+    ".smx-tab { position:relative; font:inherit; font-size:14px; line-height:22px; padding:8px 1px 12px; border-radius:0; border:0; background:none; color:var(--dsw-alias-label-tertiary,var(--dsw-alias-label-secondary)); cursor:pointer; }",
+    ".smx-tab.is-active { color:var(--dsw-alias-label-primary); }",
+    ".smx-header .smx-title { letter-spacing:-.02em; }",
+    ".smx button, .smx-view button, .smx-modal button, .smx-native-modal button { font-family:inherit; }",
+    ".smx-defaults { display:flex; align-items:center; justify-content:space-between; gap:24px; padding:16px 20px; border:.5px solid var(--dsw-alias-border-l2); border-radius:var(--dsw-radius-lg,16px); background:var(--dsw-alias-settings-card-fill,var(--dsw-alias-bg-layer-2)); }",
+    ".smx-defaults__copy { min-width:0; }",
+    ".smx-defaults__title { font-size:14px; line-height:22px; font-weight:500; }",
+    ".smx-defaults__description { margin:4px 0 0; max-width:720px; font-size:12px; line-height:19px; color:var(--dsw-alias-label-secondary); }",
+    ".smx-defaults__error { margin:8px 0 0; font-size:12px; color:var(--dsw-alias-state-error-primary); }",
+    ".smx-native-button { flex:none; font-family:inherit; }",
+    ".smx-native-button[data-danger] { color:var(--dsw-alias-state-error-primary); }",
+    ".smx-native-modal { width:min(800px,calc(100vw - 48px)); max-height:calc(100dvh - 64px); font-family:var(--dsw-font-family,inherit); font-size:13px; line-height:20px; color:var(--dsw-alias-label-primary); }",
+    ".smx-native-modal__content { min-height:0; overflow:auto; overscroll-behavior:contain; }",
+    ".smx-native-modal .smx-modal__body { overflow:visible; }",
+    ".smx-tab.is-active::after { content:\"\"; position:absolute; left:0; right:0; bottom:-1px; height:2px; border-radius:2px 2px 0 0; background:currentColor; }",
+    ".smx-tab:hover { color:var(--dsw-alias-label-primary); }",
+    ".smx input:not([type=checkbox]):focus-visible, .smx select:focus-visible, .smx textarea:focus-visible, .smx-native-modal input:focus-visible, .smx-native-modal select:focus-visible, .smx-native-modal textarea:focus-visible { outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-border-selected)); outline-offset:2px; }",
+    ".smx-form input[type=checkbox] { width:16px; height:16px; padding:0; accent-color:var(--dsw-alias-brand-primary); }",
+    ".smx-form__row > .smx-native-button { justify-self:start; }",
+    "@media (max-width:640px) { .smx-head { align-items:flex-start; } .smx-head__meta { gap:4px; } .smx-head__inline { flex-wrap:wrap; } .smx-form__row { grid-template-columns:minmax(0,1fr); gap:6px; } .smx-form__label { text-align:left; } .smx-defaults { padding:16px; gap:16px; } .smx-group__head { align-items:flex-start; } .smx-group__toggle { flex-wrap:wrap; } .smx-import__head { flex-wrap:wrap; } .smx-import__item { flex-wrap:wrap; } }",
   ].join("\n");
 
   function injectCss() {

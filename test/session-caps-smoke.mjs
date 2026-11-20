@@ -709,6 +709,92 @@ const agent = makeAgent("sess-1");
   check(unknown.status === 400, "an unknown MCP name must be refused");
 }
 
+// Library defaults seed only NEW roots; existing choices, workspace presets and
+// delegated parent policy keep priority, and disabled catalog items stay off.
+{
+  const settings = routeByPath("/skill-mcp-manager/settings");
+  const read = makeRes();
+  await settings.handler(makeReq("GET", "/skill-mcp-manager/settings"), read);
+  check(bodyOf(read).inheritLibraryDefaults === false, "library defaults must be opt-in for existing installations");
+  const oldBlank = makeAgent("library-default-existing-blank");
+  for (const listener of createdAgents) await listener({ agent: oldBlank, source: "startup" });
+  const enabled = makeRes();
+  await settings.handler(makeReq("POST", "/skill-mcp-manager/settings", { inheritLibraryDefaults: true }), enabled);
+  check(bodyOf(enabled).inheritLibraryDefaults === true, "library defaults switch must be accepted and returned");
+  const saved = JSON.parse(await readFile(join(dataDir, "settings.json"), "utf8"));
+  check(saved.inheritLibraryDefaults === true, "library defaults must persist across restart");
+  const oldWorkspace = currentWorkspace;
+  currentWorkspace = join(tmp, "library-default-workspace");
+  await preStep(oldBlank);
+  check(!(await caps("GET", { session: oldBlank.session.id })).body.mcp.find((x) => x.name === "alpha")?.enabled,
+    "a blank conversation created before opt-in must also keep the old baseline");
+  const created = makeAgent("library-default-created");
+  created.session.header = { id: created.session.id, cwd: currentWorkspace };
+  for (const listener of createdAgents) await listener({ agent: created, source: "startup" });
+  const createdCaps = (await caps("GET", { session: created.session.id })).body;
+  check(createdCaps.mcp.find((x) => x.name === "alpha")?.enabled === true, "newly created root must be initialized before its first turn");
+  check(createdCaps.live && createdCaps.workspace === currentWorkspace && createdCaps.skills.find((x) => x.name === "only-conversation")?.enabled === true,
+    "before the first turn the capability panel must already use the new agent's workspace and skill scope");
+  const readPreset = () => caps("GET", undefined, "/skill-mcp-manager/workspace-defaults?workspace=" + encodeURIComponent(currentWorkspace));
+  check((await readPreset()).body.configured === false, "no saved workspace preset must report unconfigured, not a saved empty preset");
+  await mkdir(currentWorkspace, { recursive: true });
+  await writeFile(join(currentWorkspace, ".mcp.json"), JSON.stringify({ mcpServers: { "library-project-server": { command: "node", args: ["fixture.js"] } } }), "utf8");
+  const resumed = makeAgent("library-default-resumed-no-policy");
+  resumed.session.header = { id: resumed.session.id, cwd: currentWorkspace };
+  for (const listener of createdAgents) await listener({ agent: resumed, source: "resume" });
+  const resumedCaps = (await caps("GET", { session: resumed.session.id })).body;
+  check(!resumedCaps.mcp.some((x) => x.source !== "workspace" && x.enabled), "resuming an old conversation without a prior plugin policy must not acquire library defaults");
+  await preStep(resumed);
+  check(!(await caps("GET", { session: resumed.session.id })).body.mcp.find((x) => x.name === "alpha")?.enabled,
+    "pre-step fallback must not turn a resumed conversation into a new one");
+  const root = makeAgent("library-default-root");
+  skills["skill-one"].invocation.modelInvocable = false;
+  await preStep(root);
+  let state = (await caps("GET", { session: root.session.id })).body;
+  check(state.mcp.find((x) => x.name === "alpha")?.enabled === true, "new root must inherit enabled registry MCP");
+  check(state.mcp.find((x) => x.name === "library-project-server")?.enabled === true, "library preset must preserve the workspace server baseline");
+  check(state.mcp.find((x) => x.name === "beta")?.enabled === false, "globally stopped MCP must not enter defaults");
+  check(state.mcp.find((x) => x.name === "sequential")?.enabled === true, "new root must inherit enabled plugin MCP");
+  check(state.skills.find((x) => x.name === "only-conversation")?.enabled === true, "new root must inherit its provider skills");
+  check(state.skills.find((x) => x.name === "skill-one")?.enabled === false, "globally model-hidden skill must stay off");
+  await caps("POST", { session: root.session.id, kind: "mcp", name: "alpha", enabled: false });
+  await preStep(root);
+  state = (await caps("GET", { session: root.session.id })).body;
+  check(state.mcp.find((x) => x.name === "alpha")?.enabled === false, "library default must not overwrite an existing root choice");
+  const child = makeAgent("library-default-child");
+  child.session.header = { id: child.session.id, origin: "subagent", parentSession: root.session.id };
+  await preStep(child);
+  check(!(await caps("GET", { session: child.session.id })).body.mcp.find((x) => x.name === "alpha")?.enabled,
+    "child must follow parent choice instead of library defaults");
+  const preset = makeRes();
+  await routeByPath("/skill-mcp-manager/workspace-defaults").handler(makeReq("POST", "/skill-mcp-manager/workspace-defaults", { workspace: currentWorkspace, action: "save-current", session: root.session.id }), preset);
+  check((await readPreset()).body.configured === true, "a saved workspace preset must be reported explicitly");
+  const workspaceRoot = makeAgent("library-default-workspace-root");
+  await preStep(workspaceRoot);
+  check(!(await caps("GET", { session: workspaceRoot.session.id })).body.mcp.find((x) => x.name === "alpha")?.enabled,
+    "explicit workspace default must override the library fallback");
+  const cleared = makeRes();
+  await routeByPath("/skill-mcp-manager/workspace-defaults").handler(makeReq("POST", "/skill-mcp-manager/workspace-defaults", { workspace: currentWorkspace, action: "clear" }), cleared);
+  check((await readPreset()).body.configured === false, "clearing the workspace preset must restore the library fallback in the view");
+  pluginEnabled = false;
+  const next = makeAgent("library-default-next");
+  await preStep(next);
+  check(!(await caps("GET", { session: next.session.id })).body.mcp.find((x) => x.name === "sequential")?.enabled,
+    "next root must read latest library switches, not an old captured snapshot");
+  pluginEnabled = true;
+  skills["skill-one"].invocation.modelInvocable = true;
+  const bad = makeRes();
+  await settings.handler(makeReq("POST", "/skill-mcp-manager/settings", { inheritLibraryDefaults: "yes" }), bad);
+  check(bad.status === 400, "library default flag must reject non-booleans");
+  const off = makeRes();
+  await settings.handler(makeReq("POST", "/skill-mcp-manager/settings", { inheritLibraryDefaults: false }), off);
+  const closed = makeAgent("library-default-off");
+  await preStep(closed);
+  check(!(await caps("GET", { session: closed.session.id })).body.mcp.some((x) => x.source !== "workspace" && x.enabled), "disabling library defaults restores closed global capabilities while preserving workspace baseline");
+  await rm(join(currentWorkspace, ".mcp.json"));
+  currentWorkspace = oldWorkspace;
+}
+
 // Reload must preserve inherited relations, detached overrides, empty choices and
 // fail-closed handling of damaged chains; it must not reseed from the workspace.
 {
@@ -764,6 +850,26 @@ const agent = makeAgent("sess-1");
   check(presetAcquires >= 2, "supported acquireScope must be used instead of a silent global fallback");
   check(presetLeases === 0, "all preset scope leases must be released after reads");
   modernPresets = false;
+}
+
+// A persisted library default must survive a full plugin apply, not only one process variable.
+{
+  const stored = JSON.parse(await readFile(join(dataDir, "settings.json"), "utf8"));
+  stored.inheritLibraryDefaults = true;
+  await writeFile(join(dataDir, "settings.json"), JSON.stringify(stored), "utf8");
+  const reloadRoutes = [], reloadCreated = [];
+  const web = { register(route) { reloadRoutes.push(route); return () => {}; } };
+  const reloadCtx = { ...ctx, webServer: web,
+    on(event, fn) { if (event === "agent/created") reloadCreated.push(fn); return () => {}; },
+    get(name) { return name === "webServer" ? web : ctx.get(name); },
+    inject(names, fn) { if (names.includes("webServer")) fn({ ...reloadCtx, webServer: web }); if (names.includes("loader")) fn({ loader: fakeLoader }); return () => {}; },
+  };
+  await apply(reloadCtx, { dataDir, profile: "__test__", importNativeMcp: false });
+  const agent = makeAgent("library-default-reloaded");
+  agent.session.header = { id: agent.session.id, cwd: join(tmp, "reload-workspace") };
+  for (const fn of reloadCreated) await fn({ agent });
+  const saved = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
+  check(saved[agent.session.id]?.mcp.includes("alpha"), "persisted default must seed new conversations after reload");
 }
 
 for (const disposer of effects) { try { await disposer(); } catch { /* best effort */ } }

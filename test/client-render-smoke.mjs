@@ -75,6 +75,7 @@ globalThis.fetch = async (url) => {
       ],
     });
   }
+  if (path === "/skill-mcp-manager/settings") return json({ ok: true, inheritLibraryDefaults: false, customRecursiveDirs: [] });
   if (path.includes("/workspace-defaults")) return json({ ok: true, workspace: "/work/demo", mcp: ["reqable"], skills: [] });
   if (path.includes("/skill-groups")) return json({ ok: true, groups: [{ id: "g1", name: "前端", order: 0 }], members: { "web-search": "g1" } });
   if (path.includes("/skills/import")) {
@@ -281,7 +282,7 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
     check(findText(tree, "web-search").length > 0, "an open group must render its cards");
     check(findText(tree, "存为工作区默认").length > 0, "the workspace default must be saveable from the view");
     check(findText(tree, "清除默认").length > 0, "the workspace default must be clearable from the view");
-    check(findText(tree, "新对话默认：").length > 0, "the view must show the workspace default state");
+    check(findText(tree, "工作区预设：").length > 0 || findText(tree, "新会话默认在能力库设置").length > 0, "the view must show the workspace default state");
   }
 }
 
@@ -310,6 +311,51 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
   check(findText(tree, "# Runtime provider original content").length > 0, "runtime detail click must fetch and display the provider body");
   check(nodes(tree, (node) => node.props.role === "dialog").length === 1, "runtime skill detail must use the shared modal");
   delete stateOverrides["ManagerSection:0"];
+}
+
+// New-session preset: real control click, accepted persistence and a failed save.
+{
+  for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
+  const previousFetch = globalThis.fetch;
+  let flag = false, reject = false, writes = 0;
+  globalThis.fetch = async (url, options) => {
+    if (String(url) !== "/skill-mcp-manager/settings") return previousFetch(url, options);
+    if (options?.method === "POST") {
+      writes += 1;
+      if (reject) return { ok: false, status: 400, json: async () => ({ error: "preset save fixture failure" }) };
+      flag = JSON.parse(options.body).inheritLibraryDefaults;
+    }
+    return json({ ok: true, inheritLibraryDefaults: flag });
+  };
+  const nodes = (tree, predicate, out = []) => {
+    if (!tree || typeof tree !== "object") return out;
+    if (predicate(tree)) out.push(tree);
+    for (const child of tree.children ?? []) nodes(child, predicate, out);
+    return out;
+  };
+  const props = panel.options.inject ? panel.options.inject() : {};
+  try {
+    renderComponent("library defaults initial", panel.component, props);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    let tree = renderComponent("library defaults ready", panel.component, props, true);
+    const control = () => nodes(tree, (node) => node.props.role === "switch")[0];
+    check(findText(tree, "新会话沿用能力库开关").length > 0, "library must show the new-session preset at the top");
+    check(!control().props.disabled, "supported host must enable preset switch");
+    await control().props.onClick();
+    tree = renderComponent("library defaults enabled", panel.component, props, true);
+    check(flag && writes === 1 && control().props["aria-checked"] === "true", "preset click must persist its flag and reflect accepted host state");
+    reject = true;
+    await control().props.onClick();
+    tree = renderComponent("library defaults failed", panel.component, props, true);
+    check(control().props["aria-checked"] === "true" && findText(tree, "preset save fixture failure").length > 0,
+      "failed preset save must retain accepted switch state and report error");
+    globalThis.fetch = async (url, options) => String(url) === "/skill-mcp-manager/settings"
+      ? json({ ok: true }) : previousFetch(url, options);
+    renderComponent("legacy preset initial", panel.component, props);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    tree = renderComponent("legacy preset ready", panel.component, props, true);
+    check(control().props.disabled === true, "old host without the preset field must not pretend the switch works");
+  } finally { globalThis.fetch = previousFetch; }
 }
 
 // 3) Real component event handlers: click authorization, show its waiting card,

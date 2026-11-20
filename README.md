@@ -16,7 +16,7 @@ SKILL management
 
 ### 1. One-stop visual management (cards)
 
-Which Skills **and** MCPs are installed? Are they enabled? What does each one do? All visible directly in the settings page — **no digging through layers**. Skills and MCPs render as cards: name, path/transport, tool count, tier and current status at a glance, with the actions belonging to that card. Long content (env, headers, the tool list) moved into a side detail drawer instead of stretching the list into a wall. Enable/disable and delete MCPs and Skills from the UI, and click a SKILL to view its source (opens with your local default markdown reader). Each MCP tool can also be enabled or disabled independently; a disabled tool cannot be called by the AI and does not affect other tools on the same server.
+Which Skills **and** MCPs are installed? Are they enabled? What does each one do? All visible directly in the settings page — **no digging through layers**. Skills and MCPs render as cards: name, path/transport, tool count, tier and current status at a glance, with the actions belonging to that card. Long content (env, headers, the tool list) moved into a centered native DSH detail dialog instead of stretching the list into a wall. Enable/disable and delete MCPs and Skills from the UI, and click a SKILL to view its source (opens with your local default markdown reader). Each MCP tool can also be enabled or disabled independently; a disabled tool cannot be called by the AI and does not affect other tools on the same server.
 
 ### 1.1 Skills grouped by origin
 
@@ -30,16 +30,18 @@ Some MCP servers are injected by a plugin's own config (box, for example); the l
 
 A crashed or failed stdio MCP leaves its whole `npx → cmd → node` chain behind. **Clean up residual processes** in the MCP header scans first (it lists pids and the command they match) and only kills after you confirm; only commands this plugin manages are candidates, and anything owned by a running DSH is always kept — including the connections you are using right now.
 
-### 1.4 Per-conversation capability view (closed by default)
+### 1.4 Per-conversation capability view and new-session preset
 
 The conversation's view switcher (next to the trajectory view) gains a **能力管理** tab: one card and one switch per MCP server and per skill, for *this* conversation only.
 
-- **A new conversation starts with everything off**: no MCP server is mounted, the catalog is empty, and every `skill` call and plugin-mounted `mcp__*` call is refused. Turn on what this chat needs.
+- **New-session preset**: enable “新会话沿用能力库开关” at the top of the library to initialize future conversations from the currently enabled MCPs and model-invocable skills. Each new conversation gets an independent policy; existing conversations are untouched. Explicit workspace defaults take priority, and subagents still inherit their parent. The option is off by default; without it, only workspace-owned capabilities are enabled automatically.
 - **Bulk switches are per kind**: MCP and skills each have their own *enable all / disable all*, and every group inside them has its own pair too.
 - **Grouped by origin**: MCP splits into your own servers and one group per plugin that mounts its own; skills split into 系统 and one group per plugin.
 - **Immediate**: a server that turns off is disconnected and dropped from this conversation's catalog, `mcp_load`/`mcp_call` refuse it, and a skill that turns off leaves the skill catalog while its load call is denied by a guard registered on this conversation. Global configuration and skill files are untouched, and the policy survives reopening the conversation.
 
 - **Subagents inherit capability switches**: spawn/fork children follow their parent's MCP and skill allow lists, including nested delegation and later revocation. Editing a child's own switches makes its policy independent. MCP processes/connections remain isolated per agent.
+
+Buttons, switches, and dialogs reuse DSH’s native controls and follow its light/dark theme. Security options live under **插件设置** in the top-right corner.
 
 ### 1.5 Sidebar entry
 
@@ -162,7 +164,7 @@ The plugin provides three small, fixed tools to manage all on-demand MCPs.
 ## Data
 
 - `~/.dsh/skill-mcp-manager/registry.json` — authoritative MCP registry (version 1, `entries[]`).
-- `~/.dsh/skill-mcp-manager/settings.json` — plugin settings (`customRecursiveDirs`, `toolDescriptionMaxLength`, …).
+- `~/.dsh/skill-mcp-manager/settings.json` — plugin settings (`customRecursiveDirs`, `toolDescriptionMaxLength`, `inheritLibraryDefaults`, …).
 - `~/.dsh/skill-mcp-manager/trash.log` — delete audit.
 - Env values may be literals or `$VAR` references to the process environment.
 

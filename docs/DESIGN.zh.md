@@ -586,3 +586,11 @@ session-caps 写入排队，防并发创建/开关重用同一 tmp 文件导致 
 MCP 能力库合计为注册表条目与插件 loader 行的总和，显示来源分项，连接检测统计仅针对注册表。会话能力管理显示对应作用域的全量条目，包含全局停用的注册表和插件 MCP；其有效开启值为全局可用且会话策略允许。全局停用卡片开关置灰并指引去能力库启用，单项启用由宿主拒绝，bulk 开启不记录这些允许项；全关仍可清理旧允许项。工作区声明、pin 与精确 preset revision 保持原有隔离，跨作用域目录不要求机械相等，页面说明差异来源。
 
 验证以同一作用域下名称集合逐项相等为准，不能只核对总数。真实 provider 验证使用 Office / Badge / ACL 注册与 filesystem，真实 HTTP 与生产 React 视图在隔离数据上运行，不借操作用户真实开关来通过门禁。
+
+## 原生 DSH 视觉与能力库新会话预设（2026-11-20）
+
+客户端从宿主静态模块表可选 require ui-primitives，操作按钮、开关与全部浮层使用原生 Button/Switch/Modal。按钮适配器只映射语义（primary/outline/ghost），不复制控件内部结构或引用 hash 类名；原生 Modal 负责焦点与关闭，CSS 仅控制内容宽度和布局。缺少模块的旧宿主退回现有可用控件。样式使用 dsw 字体、settings-card-fill、边框、radius 与 elevation token，随宿主浅深主题切换；卡片网格、默认展开、能力库插件组一行加更多弹窗规则不变。
+
+新增 settings.json 的 inheritLibraryDefaults 布尔值，默认 false，以免更新插件隐式扩大权限。能力库顶部「新会话沿用能力库开关」独立即时保存，只有保存成功才显示新状态；旧宿主未返回该字段则禁用并提示更新。开启后 agent/created 为新的根会话初始化（pre-step 兜底）：非 disabled 且未 pin 到其它工作区的注册表 MCP、当前启用的插件 MCP、当前 agent scope 的 modelInvocable 技能；工作区声明的 MCP 保留原有基线。此初始化在影子注册前读取真实目录；权限存为 session-caps 的独立 seeded 快照。宿主 agent/created 的 source 只有 startup 表示新建，resume/clear/compact 根代理和开启预设前已建的空白会话均不补套库预设，pre-step 保留这个判断。新会话的能力管理首轮前即可读取实际作用域，不提前挂载 MCP。工作区默认接口用 configured 区分未设置和明确保存的空预设。能力库保存技能开关后立即使技能发现缓存失效，无需等待文件监听。
+
+优先级：已有会话策略 / 子代理父链优先；新根会话的显式 workspace-defaults 优先于库预设；无工作区默认时才考虑库预设；库预设关闭则回到既有 workspace-owned 基线。库里的后续开关只影响以后创建的会话，不反复覆盖旧会话。模型调用边界与逐会话 MCP 实例隔离不变。
