@@ -1,6 +1,12 @@
 name: Publish npm package
 
 on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to publish (for example v1.4.0)
+        required: true
+        type: string
   push:
     tags:
       - "v*.*.*"
@@ -16,11 +22,18 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: 24
+
+      - name: Verify release version
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: node -e "const fs=require('node:fs'); const version=JSON.parse(fs.readFileSync('package.json','utf8')).version; if(process.env.RELEASE_TAG!=='v'+version) throw new Error('Release tag and package version differ');"
 
       - name: Install dependencies
         run: npm install --ignore-scripts
