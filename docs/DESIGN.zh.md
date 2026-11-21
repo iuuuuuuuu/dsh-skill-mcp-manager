@@ -538,7 +538,7 @@ tmp/               # 插件内部临时文件（AI 不直接引用；无 args_fi
 
 - `@deepseek-ai/dsh-skill` / `dsh-skill-filesystem` / `dsh-tool-skill`（README + `lib/index.js`：pre-step enter、digest、追加替换）。
 - `@deepseek-ai/dsh-mcp-client`（README + `lib/index.js`：静态实例、命名、重连、世代替换、SDK 通道；**无 idle 机制**）。
-- 运行时组合：`C:\Users\Zinger\.dsh\profiles\{web,desktop}\cordis.patch.yml`。
+- 运行时组合：`$HOME\.dsh\profiles\{web,desktop}\cordis.patch.yml`。
 - Slots 树（client Inspect）：`settings.section`、`sidebar.footer.action`。
 - 用户参考实现（桥接 args 文件 workaround 的教训来源）：[alone-tree/Capability-Library](https://github.com/alone-tree/Capability-Library)。
 
@@ -587,10 +587,18 @@ MCP 能力库合计为注册表条目与插件 loader 行的总和，显示来�
 
 验证以同一作用域下名称集合逐项相等为准，不能只核对总数。真实 provider 验证使用 Office / Badge / ACL 注册与 filesystem，真实 HTTP 与生产 React 视图在隔离数据上运行，不借操作用户真实开关来通过门禁。
 
+## 非插件能力编辑（2026-11-21）
+
+能力库「编辑」用原生 Modal。MCP 的 GET `/mcp/edit` / POST `/mcp/update` 只定位既有 registry 名称，排除插件 loader 来源；投影可编辑连接字段并返回 revision，更新校验完整字段类型，按变化字段调用 `registerServerEntry`，默认真实握手、失败不落盘，保留 pin、systemEntryId 与 disabledTools。成功后旧按需连接释放，下次加载读新配置；连接字段变化清除过时检测结果。
+
+技能 GET `/skills/edit` / POST `/skills/update` 在原有 preset/cwd 租约内按名称定位，provider 为插件、无 SKILL.md、随包路径及解析后的随包目标均拦截。返回原始文件（含 frontmatter）；校验共用 parseSkillText / parseFrontmatter，禁止改名或删除既有显式名称，原子写临时文件后替换并失效发现缓存。客户端不传写入路径。两类编辑串行执行并比对 revision；外部改动与并发提交冲突不覆盖。新客户端遇到旧宿主缺接口只提示加载新版，不复用旧的不受限写入口。
+
 ## 原生 DSH 视觉与能力库新会话预设（2026-11-20）
 
 客户端从宿主静态模块表可选 require ui-primitives，操作按钮、开关与全部浮层使用原生 Button/Switch/Modal。按钮适配器只映射语义（primary/outline/ghost），不复制控件内部结构或引用 hash 类名；原生 Modal 负责焦点与关闭，CSS 仅控制内容宽度和布局。缺少模块的旧宿主退回现有可用控件。样式使用 dsw 字体、settings-card-fill、边框、radius 与 elevation token，随宿主浅深主题切换；卡片网格、默认展开、能力库插件组一行加更多弹窗规则不变。
 
 新增 settings.json 的 inheritLibraryDefaults 布尔值，默认 false，以免更新插件隐式扩大权限。能力库顶部「新会话沿用能力库开关」独立即时保存，只有保存成功才显示新状态；旧宿主未返回该字段则禁用并提示更新。开启后 agent/created 为新的根会话初始化（pre-step 兜底）：非 disabled 且未 pin 到其它工作区的注册表 MCP、当前启用的插件 MCP、当前 agent scope 的 modelInvocable 技能；工作区声明的 MCP 保留原有基线。此初始化在影子注册前读取真实目录；权限存为 session-caps 的独立 seeded 快照。宿主 agent/created 的 source 只有 startup 表示新建，resume/clear/compact 根代理和开启预设前已建的空白会话均不补套库预设，pre-step 保留这个判断。新会话的能力管理首轮前即可读取实际作用域，不提前挂载 MCP。工作区默认接口用 configured 区分未设置和明确保存的空预设。能力库保存技能开关后立即使技能发现缓存失效，无需等待文件监听。
 
-优先级：已有会话策略 / 子代理父链优先；新根会话的显式 workspace-defaults 优先于库预设；无工作区默认时才考虑库预设；库预设关闭则回到既有 workspace-owned 基线。库里的后续开关只影响以后创建的会话，不反复覆盖旧会话。模型调用边界与逐会话 MCP 实例隔离不变。
+优先级：已有会话策略 / 子代理父链优先；新根会话的显式 workspace-defaults 优先于库预设；无工作区默认时才考虑库预设；库预设关闭则回到既有 workspace-owned 基线。库默认只用于创建，不反复覆盖旧会话。模型调用边界与逐会话 MCP 实例隔离不变。
+
+「配置」弹窗从 `GET /skill-mcp-manager/library-defaults` 读取候选项与选中项，只返回名称、描述、可用性与来源展示元数据，不返回连接配置或技能路径。MCP 带 source（registry / plugin）和插件 owner，技能带 provider 与复用的 skillOrigin；已保存但目录缺失的名称标为 source:missing。弹窗在 MCP / 技能两栏内按系统、自建 MCP、插件归属分组，组名显示插件包名（缺包名退回 provider），未知归属与暂缺项单独列出，默认全部展开；筛选匹配名称、描述和插件组名，不修改隐藏项的勾选。新客户端遇到旧宿主未提供来源时，仅从既有 /mcp 与 /skills 只读路由补齐展示字段；补齐失败显示「来源待识别」，不猜来源、不覆盖可用性或已存选择。候选技能使用能力库的 preset 租约而非当前会话的技能影子；创建时仍按新会话真实 agent scope、工作区和全局可用性裁剪。`POST /skill-mcp-manager/settings` 仅更新提交的字段并串行执行读改写。`libraryDefaults` 缺失或为 null 时，继续沿用实时能力库开关；明确的 `{mcp:[],skills:[]}` 不回退。取消仅丢弃弹窗草稿，恢复沿用能力库写入 null；全部操作都不改全局库或已存在的会话策略。

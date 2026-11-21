@@ -46,13 +46,13 @@ docs/           程序架构（DESIGN.zh.md）、交接（HANDOFF.md）、截图
 ### 数据
 
 - `~/.dsh/skill-mcp-manager/registry.json` —— MCP 注册表（权威）。条目里的 `lastCheck{at,ok,latencyMs,toolCount,serverName,toolsDiffer,error}` 是管理页最后一次连接检测的记录（见下方决策）。
-- `~/.dsh/skill-mcp-manager/settings.json` —— 插件设置（`customRecursiveDirs`、`toolDescriptionMaxLength`、`stdioMaxBufferSizeMb`、`localCommandApproval`、`lanHostAllowlist`、`inheritLibraryDefaults`）。`localCommandApproval`、`lanHostAllowlist`、`inheritLibraryDefaults` 和 `stdioMaxBufferSizeMb` 只在管理页改，不进安装配置。
+- `~/.dsh/skill-mcp-manager/settings.json` —— 插件设置（`customRecursiveDirs`、`toolDescriptionMaxLength`、`stdioMaxBufferSizeMb`、`localCommandApproval`、`lanHostAllowlist`、`inheritLibraryDefaults`、`libraryDefaults`）。`libraryDefaults` 是能力库界面设置，不进安装配置。`localCommandApproval`、`lanHostAllowlist`、`inheritLibraryDefaults` 和 `stdioMaxBufferSizeMb` 只在管理页改，不进安装配置。
 - `~/.dsh/profiles/<profile>/cordis.patch.yml` —— 被 reconcile 的 patch：全部 MCP 行收敛进托管块（`MANAGED_MARKER` 与 `MANAGED_END_MARKER` 之间），由注册表整体重生成，每条目一行 `disabled: true`。
 
 ### 每次启动顺序（lib/index.js 的 apply → startup）
 
 1. `loadRegistry(dataDir)`
-2. 读 settings.json（覆盖 `toolDescriptionMaxLength`、`stdioMaxBufferSizeMb`、`localCommandApproval`、`lanHostAllowlist`、`inheritLibraryDefaults`）
+2. 读 settings.json（覆盖 `toolDescriptionMaxLength`、`stdioMaxBufferSizeMb`、`localCommandApproval`、`lanHostAllowlist`、`inheritLibraryDefaults`、`libraryDefaults`）
 3. `reconcile()` —— 吸收 + 托管块整体重生成：扫描**整个补丁文件**的 dsh-mcp-client 行，未认领的按行 id 吸收进注册表；托管块由注册表整体重生成（每条目恰好一行、disabled、重复 id 拒绝写盘），托管块外被认领的原生行从原位置移除
 4. `warmSnapshots()` —— 无缓存或 `metaFetchedAt` 为空的条目一次性试连、抓工具快照 + 服务器元信息后关闭，不留下运行实例
 5. eager 实例改到各会话首次 `agent/pre-step` 时在该会话 `agent.ctx` 上启动
@@ -77,7 +77,9 @@ docs/           程序架构（DESIGN.zh.md）、交接（HANDOFF.md）、截图
 - **子代理能力继承 = durable lineage + 实时父策略**：只认 `session.header.origin === "subagent"` 且有 `parentSession`；普通对话 fork 虽也有 parentSession，不继承。首次 agent/created（pre-step 兜底）写 `session-caps.json` 的 `inheritFrom`，所有能力读取沿父链解析，含孙代理和重载。用户显式编辑子代理时快照两类允许项并解除继承，空策略必须保留。父项关闭立刻关闭继承后代的连接/撤原生注册，MCP/skill 双边界实时拒绝，不能只在创建时复制；MCP 实例继续按代理隔离。策略写盘串行化，缺父/循环默认拒绝。测试覆盖真实 stdio 父子独立 PID、撤销/重启子进程和旧 eager execute 拒绝。
 - **能力库与能力管理的目录计数**：两边都按 invocation-neutral 完整目录列举，不能在能力库只留 SKILL.md 而在会话保留 runtime。无 bundle path 的技能只读、可看正文详情，磁盘操作与组开关跳过它们。MCP 总数 = 注册表 + 插件行，全局停用项保留但不可会话开启；bulk 开启跳过全局停用项，模型边界不放宽。不同工作区 / preset 与会话专属项仍按真实作用域隔离，不为了数字相等混入不相关能力。
 - **技能开关不能把管理卡片隐藏掉**：会话影子必须保留原定义的 path/provider/resourceBase/content，只覆盖 invocation；能力管理列举是 invocation-neutral，runtime 技能无 SKILL.md 路径也必须保留。只在磁盘编辑/删除等操作使用 bundle 路径校验。测试桩必须让影子真实参与 list/get 的同名覆盖，不能只记录 register 调用；否则单测会掩盖「开关后消失」。策略不变不代表技能目录不变，每轮仍检查新发现的技能。
-- **能力库预设只初始化新会话**：`settings.json.inheritLibraryDefaults` 为 opt-in（默认 false）；能力库顶部开关保存后，之后的新根会话按当前库中的非 disabled MCP、启用插件行及本 agent scope 的 modelInvocable 技能初始化，保留工作区声明的 MCP。agent/created 初始化、pre-step 兜底；宿主 source 为 resume/clear/compact 的根代理以及开启预设前已建的空白会话，都不补套库预设；已有策略不改，显式工作区默认（含空预设）优先，子代理仍沿父链。不能把库预设做成每轮覆盖旧会话的 live allow-all。
+- **编辑仅开放非插件能力**：卡片「编辑」走原生 Modal。MCP 仅接受已有注册表条目，读写均校验非插件来源；名称固定，连接参数/档位/备注可改，复用注册函数试连，失败不落盘，保留工作区 pin、loader id 与禁用工具。技能按 provider 拦插件来源，并拦无文件、随包和真实目标位于随包目录的符号链接；编辑完整 SKILL.md，复用发现解析器校验且保留名称。两个编辑器用 revision 校验与串行写入处理并发；取消不写，保存刷新目录，不接受客户端文件路径。旧宿主缺接口显示更新提示，不降级成不受来源限制的写入。
+- **新会话默认配置展示来源分组**：`GET /library-defaults` 的 MCP 行带 `source` 与插件 `owner`，技能带 `provider` / `origin`，目录缺失的保存项标 `source:missing`；这些都是展示字段，不改变允许项语义，也不返回连接配置或技能路径。弹窗按来源分组，显示插件名、组内已选数量，默认展开；插件名可搜索，筛选不丢隐藏勾选。新客户端在旧宿主上从既有 `/mcp` / `/skills` 路由补齐来源；失败显示「来源待识别」，不猜归属。
+- **能力库预设只初始化新会话**：`settings.json.inheritLibraryDefaults` 为 opt-in（默认 false）；能力库顶部开关保存后，之后的新根会话按当前库中的非 disabled MCP、启用插件行及本 agent scope 的 modelInvocable 技能初始化；`settings.json.libraryDefaults` 存在固定列表时再按所选名称过滤，缺失或 null 时沿用库开关，空列表不是未配置。保留工作区声明的 MCP。agent/created 初始化、pre-step 兜底；宿主 source 为 resume/clear/compact 的根代理以及开启预设前已建的空白会话，都不补套库预设；已有策略不改，显式工作区默认（含空预设）优先，子代理仍沿父链。不能把库预设做成每轮覆盖旧会话的 live allow-all。
 - **会话级能力策略：默认全关、记允许项、守卫才是硬保证**（2026-11-12 改）：策略存 `session-caps.json`（按会话 id 记**允许项**；没有条目 = 全关，这是 Owner 明确要求的默认）。批量开关**按类型分开**（MCP / 技能各自一对），组级开关在客户端按组内名字循环。MCP 分「注册表」与「插件注入」两类：前者能卸（不挂载 + 不进目录 + `mcp_load` 拒），后者不是本插件挂的，只能靠 agent 上下文上的 `tools/pre-execute` 守卫拒绝 `mcp__<server>__<tool>`。`isSessionAllowed` 对**没有 session id** 的上下文返回 true（那种上下文无法在「能力管理」里开关，关掉就再也没法开）；四处作用点（目录注入、`ensureSessionRuntime`、`mcp_load`/`mcp_call`、技能侧）都读实时策略，不要再缓存一份。宿主的 `skills.list/get` 吃 `{ scope: agent, cwd }`（`cwd` 用 `ctx.workingDirectory.ensure(agent)`），与 `dsh-tool-skill` 一致。技能侧必须**两层**：会话层影子（`ctx.skills.register()` 同名 + `modelInvocable:false`，尽力从目录消失）**加** agent 上下文上的 `tools/pre-execute` 守卫（返回 `"deny"`）——影子依赖层优先级，宿主换了合并规则就会静默失效，守卫不依赖。守卫注册在 `agent.ctx`，宿主按 scope 只派发该 agent 的调用；一个 agent 只注册一次（WeakMap），随 agent 上下文回收。
 - **残留 MCP 子进程清理 = 命名签名 + 存活链保护 + 两步确认**（2026-11-11，`lib/orphans.js`）：候选只来自注册表 stdio 条目与插件注入的 loader 行的命令；签名对通用解释器（node/npx/cmd/python/pwsh…）取脚本或包参数，绝不取裸名字，否则会误杀一切。**祖先链上有运行中 DSH（`DSH Tauri.exe` / `deepseek-harness-desktop` / `dsh/lib/bin.js`）的进程一律保留**——否则会打死用户正在用的 MCP 连接；调用方自己的 pid 同样跳过。默认 dry-run（`confirm !== true` 只返回候选），UI 先列 pid 再让确认。Windows 必须用 `Win32_Process` 拿命令行（`ps-list`/`tasklist` 系在 Windows 上没有 cmd，实测 0/615），POSIX 用 `ps -eo pid=,ppid=,args=`；匹配与保护判定是纯函数，单测用固定进程表。
 - **原生 DSH 视觉与控件**：操作按钮、Switch 和全部弹窗优先用宿主 ui-primitives 的 Button / Switch / Modal，CSS 只负责布局与宿主设计 token；不依赖编译后的 hash 类名。详情 / 新增不再另写 drawer 壳。旧宿主保留可用 fallback，不让可选 UI 包缺失带崩页面。验证须用真实宿主静态组件及主题截图，不能用仿制 React 控件证明原生路径。
@@ -157,6 +159,7 @@ node test/mcp-config-smoke.mjs # 粘贴配置解析（外壳/片段/错误路径
 node test/order-smoke.mjs      # 拖动排序：写入/去重/持久化 + vendor 路由服务真 SortableJS
 node test/oauth-smoke.mjs      # OAuth：发现/动态注册/PKCE/本地回调/换 token 写进 headers（假授权服务器端到端）
 node test/client-slots-smoke.mjs # 客户端座位契约：设置页 + 侧边栏行/main 面板的 id/惰性注入/注册顺序/图标/卸载离开面板
+node test/capability-edit-smoke.mjs # 非插件编辑：真实 HTTP / stdio / 磁盘、来源与只读守卫、冲突
 node test/client-render-smoke.mjs # 渲染冒烟：用最小 React 真构建 main 面板两个 tab 与 conversation.view（抓渲染期 TypeError）
 node test/skill-group-smoke.mjs # 技能分组：provider 分类、组开关写真实 frontmatter、只读跳过、系统组/未知 provider 拒绝
 node test/mcp-native-smoke.mjs # 插件注入的 MCP 行：loader 发现、bundle 归属、entry.update 热开关、坏输入拒绝
@@ -182,6 +185,7 @@ pnpm add "dsh-skill-mcp-manager@<精确版本>"           # 托管模式（市�
 
 - **版本号必须一致**：`package.json` 的 `version` 与 Git tag 必须相同（如 `1.0.1` / `v1.0.1`）；npm 同一版本号**不能重复发布**。
 - **为什么 npm 不能漏**：市场（`dsh-market`，包括 DSH Desktop）从 npm registry 安装，且**托管安装只认“已发布且版本号精确”的包**——只更新 GitHub、npm 不发，用户既装不了新品也更不了级。
+- **fork 发布权限不继承**：下述 Trusted Publisher 属于上游仓库；fork 的 GitHub 写权限不代表 npm 包写权限。fork 发布前单独确认 npm 授权；工作流或 GitHub Release 成功不等于 npm 已发布，必须查 registry 精确版本。
 - **发布认证**：npm 包已配置 GitHub Actions Trusted Publisher（OIDC），对应仓库 `alone-tree/dsh-skill-mcp-manager` 和 `.github/workflows/publish.yml`；不依赖某台电脑的 npm 登录、Token 或 OTP。npm 包页面的 Trusted Publisher 必须允许 `npm publish`。
 - **自动发布工作流**：`.github/workflows/publish.yml` 在推送 `v*.*.*` tag 时自动运行语法检查、发布基线测试，并执行 `npm publish --provenance --access public`。发布基线是上方显式列出的测试，不要用 `node test/*.mjs`（其中 `e2e-playwright.mjs` 需要真实运行时）。
 - **流程（每次发版）**：

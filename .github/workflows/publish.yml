@@ -64,6 +64,7 @@ jobs:
           node test/oauth-smoke.mjs
           node test/client-slots-smoke.mjs
           node test/client-render-smoke.mjs
+          node test/capability-edit-smoke.mjs
           node test/skill-group-smoke.mjs
           node test/skills-import-smoke.mjs
           node test/skill-route-smoke.mjs

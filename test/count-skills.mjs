@@ -2,6 +2,8 @@
 // global-skills root (via the live settings.json).
 
 import { registerRecursiveSkillProvider } from "../lib/skill.js";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
 const providers = [];
 const ctx = {
@@ -17,7 +19,7 @@ const ctx = {
   },
 };
 
-registerRecursiveSkillProvider(ctx, "C:/Users/Zinger/.dsh/skill-mcp-manager");
+registerRecursiveSkillProvider(ctx, join(process.env.DSH_HOME || join(homedir(), ".dsh"), "skill-mcp-manager"));
 const provider = providers[0];
 const { candidates, complete } = await provider.list({});
 const names = candidates.map((c) => c.name).sort();

@@ -508,6 +508,68 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     };
   }
 
+  function CapabilityEditor({ kind, name, cwd = "", onClose, onSaved }) {
+    const [record, setRecord] = useState(null);
+    const [values, setValues] = useState({});
+    const [buffers, setBuffers] = useState({});
+    const [content, setContent] = useState("");
+    const [error, setError] = useState("");
+    const [saving, setSaving] = useState(false);
+    const [skipTrial, setSkipTrial] = useState(false);
+    useEffect(() => {
+      let cancelled = false;
+      getJson("/skill-mcp-manager/" + kind + "/edit?name=" + encodeURIComponent(name) + "&cwd=" + encodeURIComponent(cwd))
+        .then((data) => {
+          if (cancelled) return;
+          if (typeof data.revision !== "string") throw new Error("宿主尚未加载编辑接口，请重新加载插件后再试");
+          setRecord(data);
+          if (kind === "mcp") {
+            setValues(data.config);
+            setBuffers(Object.fromEntries(["args", "env", "headers"].map((key) => [key, JSON.stringify(data.config[key], null, 2)])));
+          } else setContent(data.content);
+        }).catch((err) => { if (!cancelled) setError(/HTTP 40[45]/.test(errText(err)) ? "宿主尚未加载编辑接口，请重新加载插件后再试" : errText(err)); });
+      return () => { cancelled = true; };
+    }, [kind, name, cwd]);
+    async function save() {
+      setSaving(true); setError("");
+      try {
+        const body = { name, cwd, revision: record.revision };
+        if (kind === "mcp") {
+          body.config = { ...values };
+          for (const key of ["args", "env", "headers"]) {
+            try { body.config[key] = JSON.parse(buffers[key]); } catch { throw new Error(key + " 不是有效 JSON"); }
+          }
+          body.skipTrial = skipTrial;
+        } else body.content = content;
+        await postJson("/skill-mcp-manager/" + kind + "/update", body);
+        await onSaved(); onClose();
+      } catch (err) { setError(errText(err)); }
+      finally { setSaving(false); }
+    }
+    function field(key, label, structured = false) {
+      return h("label", { key, className: "smx-form__row" }, h("span", { className: "smx-form__label" }, label),
+        h(structured ? "textarea" : "input", {
+          "aria-label": label, disabled: saving, className: structured ? "smx-textarea smx-edit__json" : undefined,
+          value: structured ? buffers[key] : values[key],
+          onChange: (event) => structured ? setBuffers((old) => ({ ...old, [key]: event.target.value })) : setValues((old) => ({ ...old, [key]: event.target.value })),
+        }));
+    }
+    return h(Modal, { title: "编辑 " + (kind === "mcp" ? "MCP · " : "技能 · ") + name, onClose: () => { if (!saving) onClose(); } },
+      h("p", { className: "smx-count" }, "仅编辑自己的能力；名称保持不变，插件提供的条目不开放编辑。"),
+      error ? h("p", { className: "smx-defaults__error", role: "alert" }, error) : null,
+      !record ? (!error ? h("p", { role: "status" }, "正在读取原始配置…") : null) : kind === "skills"
+        ? h("label", null, "SKILL.md（包含 YAML frontmatter）", h("textarea", { className: "smx-textarea", rows: 18, "aria-label": "SKILL.md", value: content, disabled: saving, onChange: (event) => setContent(event.target.value) }))
+        : h("div", { className: "smx-form" },
+          h("label", { className: "smx-form__row" }, h("span", { className: "smx-form__label" }, "档位"), h("select", { "aria-label": "档位", value: values.tier, disabled: saving, onChange: (event) => setValues((old) => ({ ...old, tier: event.target.value })) }, TIERS.map((tier) => h("option", { key: tier, value: tier }, TIER_LABEL[tier])))),
+          h("label", { className: "smx-form__row" }, h("span", { className: "smx-form__label" }, "传输"), h("select", { "aria-label": "传输", value: values.transport, disabled: saving, onChange: (event) => setValues((old) => ({ ...old, transport: event.target.value })) }, h("option", { value: "stdio" }, "stdio"), h("option", { value: "streamable-http" }, "streamable-http"))),
+          values.transport === "stdio" ? [field("command", "命令"), field("args", "参数（JSON 数组）", true), field("cwd", "工作目录"), field("env", "环境变量（JSON）", true)] : [field("url", "URL"), field("headers", "请求头（JSON）", true)],
+          field("notes", "备注"),
+          h("label", { className: "smx-switchline" }, h("input", { type: "checkbox", checked: skipTrial, disabled: saving, onChange: (event) => setSkipTrial(event.target.checked) }), "跳过连通检测（OAuth 服务或离线修改时使用）")),
+      h("div", { className: "smx-setting__save" },
+        h("button", { type: "button", className: "smx-btn", disabled: saving, onClick: onClose }, "取消"),
+        h("button", { type: "button", className: "smx-btn smx-btn--primary", disabled: saving || !record, onClick: save }, saving ? "保存中…" : "保存修改")));
+  }
+
   function SkillsPanel() {
     const [skills, setSkills] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -537,6 +599,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const [importPicked, setImportPicked] = useState([]);
     const [busyImport, setBusyImport] = useState(false);
     const [detail, setDetail] = useState(null);
+    const [editing, setEditing] = useState(null);
 
     const refresh = useCallback(async () => {
       setLoading(true);
@@ -793,6 +856,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               h("option", { value: "" }, "未分组"),
               (groups.groups || []).map((group) => h("option", { key: group.id, value: group.id }, group.name)),
             ),
+            !readonly && originOf(skill).kind === "system" ? h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => setEditing(skill.name) }, "编辑") : null,
             bundle
               ? h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => open(skill) }, "打开")
               : h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => showDetail(skill) }, "详情"),
@@ -1008,6 +1072,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ));
 
     return h("div", { className: "smx" },
+      editing ? h(CapabilityEditor, { kind: "skills", name: editing, cwd: workspace, onClose: () => setEditing(null), onSaved: async () => { setNotice("已保存 " + editing); await refresh(); } }) : null,
       detail ? h(Modal, { title: detail.name + " 详情", onClose: () => setDetail(null) },
         h("div", { className: "smx-detail" },
           h("div", { className: "smx-detail__meta" }, "来源 " + (detail.provider || "runtime")),
@@ -1153,6 +1218,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     const oauthAttempt = useRef(0);
     useEffect(() => () => { oauthAttempt.current += 1; }, []);
     const closeOAuthToast = useCallback(() => setOauthToast(""), []);
+    const [editing, setEditing] = useState(null);
     // 新增: the host validates by trial-connecting; a failure comes back as 400 and is
     // shown as-is, because the server's own words are what tells the user what to fix.
     // Paste → pretty-print immediately (local, no roundtrip), then let the host parse:
@@ -1834,6 +1900,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
                   onClick: () => authorizeMcp(entry.name),
                 }, oauthBusy === entry.name ? "授权中…" : "授权")
               : null,
+            h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => setEditing(entry.name) }, "编辑"),
             h("button", { type: "button", className: "smx-btn smx-btn--ghost", onClick: () => { setOutput(""); setDetail(entry.name); } }, "详情"),
           ),
           confirming === entry.name
@@ -2025,6 +2092,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
               ),
               nativeSections,
             ),
+      editing ? h(CapabilityEditor, { kind: "mcp", name: editing, onClose: () => setEditing(null), onSaved: async () => { setChecks((old) => { const next = { ...old }; delete next[editing]; return next; }); setNotice("已保存 " + editing); await refresh(); } }) : null,
       opened ? h(Modal, { title: opened.name + " 详情", onClose: () => { setDetail(""); setOutput(""); } },
         h("div", { className: "smx-detail__actions" },
           h(Badge, { tone: TIER_TONE[opened.tier] || "muted" }, TIER_LABEL[opened.tier] || opened.tier),
@@ -2216,7 +2284,120 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     );
   }
 
+  function defaultCapabilityGroup(kind, item) {
+    if (item.source === "missing") return { key: "missing", title: "暂不可用", order: 3 };
+    if (kind === "mcp") {
+      if (item.source === "registry") return { key: "registry", title: "我的 MCP 服务器", order: 0 };
+      if (item.source === "plugin") return { key: "plugin:" + (item.owner || ""), title: item.owner ? "插件 · " + item.owner : "未归属插件", order: 1 };
+    } else if (item.origin || typeof item.provider === "string") {
+      const origin = originOf(item);
+      return origin.kind === "plugin"
+        ? { key: "plugin:" + origin.key, title: "插件 · " + (origin.package || origin.label || origin.key), order: 1 }
+        : { key: "system", title: "系统", order: 0 };
+    }
+    return { key: "unknown", title: "来源待识别", order: 2 };
+  }
+
+  function LibraryDefaultsDialog({ onClose }) {
+    const [catalog, setCatalog] = useState(null);
+    const [draft, setDraft] = useState({ mcp: [], skills: [] });
+    const [error, setError] = useState("");
+    const [saving, setSaving] = useState(false);
+    const [search, setSearch] = useState("");
+    useEffect(() => {
+      let cancelled = false;
+      getJson("/skill-mcp-manager/library-defaults").then(async (data) => {
+        if (cancelled) return;
+        if (typeof data.configured !== "boolean" || !Array.isArray(data.mcp) || !Array.isArray(data.skills)
+          || !Array.isArray(data.selection?.mcp) || !Array.isArray(data.selection?.skills)) {
+          throw new Error("当前宿主尚不支持默认配置，请更新并重启 DSH");
+        }
+        // A client-only reload can leave the host on the previous projection.
+        // Enrich provenance from existing read routes, never from descriptions.
+        const [mcpInfo, skillInfo] = await Promise.all([
+          data.mcp.some((item) => !item.source) ? getJson("/skill-mcp-manager/mcp").catch(() => null) : null,
+          data.skills.some((item) => !item.source && !item.origin && typeof item.provider !== "string")
+            ? getJson("/skill-mcp-manager/skills").catch(() => null) : null,
+        ]);
+        if (cancelled) return;
+        const mcpOrigins = new Map((mcpInfo?.entries || []).map((item) => [item.name, { source: "registry" }]));
+        for (const item of mcpInfo?.native?.entries || []) {
+          if (!mcpOrigins.has(item.serverName)) mcpOrigins.set(item.serverName, { source: "plugin", owner: item.owner });
+        }
+        const skillOrigins = new Map((skillInfo?.skills || []).map((item) => [item.name, { provider: item.provider, origin: item.origin }]));
+        setCatalog({ ...data,
+          mcp: data.mcp.map((item) => item.source ? item : { ...mcpOrigins.get(item.name), ...item }),
+          skills: data.skills.map((item) => item.source || item.origin || typeof item.provider === "string" ? item : { ...skillOrigins.get(item.name), ...item }),
+        });
+        setDraft({ mcp: [...data.selection.mcp], skills: [...data.selection.skills] });
+      }).catch((err) => { if (!cancelled) setError(errText(err)); });
+      return () => { cancelled = true; };
+    }, []);
+    function toggle(kind, name, checked) {
+      setDraft((old) => ({ ...old, [kind]: checked ? [...new Set([...old[kind], name])] : old[kind].filter((x) => x !== name) }));
+    }
+    function candidateGroups(kind) {
+      const groups = new Map();
+      const query = search.trim().toLowerCase();
+      for (const item of catalog[kind]) {
+        const source = defaultCapabilityGroup(kind, item);
+        if (!groups.has(source.key)) groups.set(source.key, { ...source, items: [], visible: [] });
+        const group = groups.get(source.key);
+        group.items.push(item);
+        if ([item.name, item.description, group.title, item.provider, item.owner].join(" ").toLowerCase().includes(query)) group.visible.push(item);
+      }
+      return [...groups.values()].filter((group) => group.visible.length > 0)
+        .sort((a, b) => a.order - b.order || a.title.localeCompare(b.title));
+    }
+    async function save(selection) {
+      setSaving(true);
+      setError("");
+      try {
+        const data = await postJson("/skill-mcp-manager/settings", { libraryDefaults: selection });
+        const accepted = selection === null ? data.libraryDefaults === null : data.libraryDefaults
+          && ["mcp", "skills"].every((kind) => Array.isArray(data.libraryDefaults[kind])
+            && JSON.stringify(data.libraryDefaults[kind]) === JSON.stringify(selection[kind]));
+        if (!accepted) {
+          throw new Error("宿主未确认默认配置，请更新并重启 DSH");
+        }
+        onClose();
+      } catch (err) { setError(errText(err)); }
+      finally { setSaving(false); }
+    }
+    return h(Modal, { title: "新会话默认能力配置", onClose: () => { if (!saving) onClose(); } },
+      h("p", { className: "smx-count" }, "选择新会话默认启用的 MCP 和技能。仅在总开关开启时采用；已有会话与能力库开关不变。工作区预设优先，子代理继承父会话。"),
+      error ? h("p", { className: "smx-defaults__error", role: "alert" }, error) : null,
+      !catalog ? (!error ? h("p", { role: "status" }, "正在加载能力目录…") : null) : h("div", { className: "smx-default-editor" },
+        h("p", { className: "smx-count" }, catalog.configured ? "已保存独立默认配置；清空两类选择后保存，表示默认不启用库中的能力。" : "尚未独立配置，已按能力库当前开启状态预选；保存后使用此固定选择。"),
+        h("input", { className: "smx-input smx-input--wide", "aria-label": "筛选默认能力", placeholder: "搜索名称、描述或插件", value: search, onChange: (event) => setSearch(event.target.value) }),
+        h("div", { className: "smx-default-editor__columns" }, ["mcp", "skills"].map((kind) => h("fieldset", { key: kind, className: "smx-default-editor__group" },
+          h("legend", null, (kind === "mcp" ? "MCP" : "技能") + " · 已选 " + draft[kind].length),
+          h("div", { className: "smx-form__actions" },
+            h("button", { type: "button", className: "smx-btn smx-btn--ghost", disabled: saving, onClick: () => setDraft((old) => ({ ...old, [kind]: [...new Set([...old[kind], ...catalog[kind].filter((x) => x.available).map((x) => x.name)])] })) }, "全选可用"),
+            h("button", { type: "button", className: "smx-btn smx-btn--ghost", disabled: saving, onClick: () => setDraft((old) => ({ ...old, [kind]: [] })) }, "清空")),
+          h("div", { className: "smx-default-editor__list" }, candidateGroups(kind).map((group) => h("section", { key: group.key, className: "smx-default-editor__source", role: "group", "aria-label": group.title },
+            h("div", { className: "smx-default-editor__source-head" },
+              h("h4", { className: "smx-default-editor__source-title" }, group.title),
+              h("span", { className: "smx-group__count" }, "已选 " + group.items.filter((item) => draft[kind].includes(item.name)).length + " / " + group.items.length)),
+            group.visible.map((item) => {
+              const checked = draft[kind].includes(item.name);
+              return h("label", { key: item.name, className: "smx-default-editor__item" },
+                h("input", { type: "checkbox", checked, disabled: saving || (!item.available && !checked), "aria-label": (kind === "mcp" ? "MCP " : "技能 ") + item.name,
+                  onChange: (event) => toggle(kind, item.name, event.target.checked) }),
+                h("span", null, h("strong", null, item.name), h("span", { className: "smx-default-editor__description" }, (!item.available ? "当前不可用 · " : "") + (item.description || "暂无描述"))));
+            }))), candidateGroups(kind).length === 0 ? h("span", { className: "smx-count" }, catalog[kind].length === 0 ? "暂无可选能力" : "没有匹配的能力") : null)
+        )))
+      ),
+      h("div", { className: "smx-setting__save smx-default-editor__footer" },
+        catalog?.configured ? h("button", { type: "button", className: "smx-btn smx-btn--ghost", disabled: saving, onClick: () => save(null) }, "恢复沿用能力库") : null,
+        h("button", { type: "button", className: "smx-btn", disabled: saving, onClick: onClose }, "取消"),
+        h("button", { type: "button", className: "smx-btn smx-btn--primary", disabled: saving || !catalog, onClick: () => save(draft) }, saving ? "保存中…" : "保存默认配置"))
+    );
+  }
+
   function LibraryDefaults() {
+    const [configOpen, setConfigOpen] = useState(false);
+    const [configSupported, setConfigSupported] = useState(false);
     const [enabled, setEnabled] = useState(false);
     const [available, setAvailable] = useState(false);
     const [busy, setBusy] = useState(false);
@@ -2227,6 +2408,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
         if (cancelled) return;
         setEnabled(data.inheritLibraryDefaults === true);
         setAvailable(typeof data.inheritLibraryDefaults === "boolean");
+        setConfigSupported(Object.hasOwn(data, "libraryDefaults"));
       }).catch((err) => { if (!cancelled) setError(errText(err)); });
       return () => { cancelled = true; };
     }, []);
@@ -2243,11 +2425,15 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     return h("section", { className: "smx-defaults", "aria-label": "新会话预设" },
       h("div", { className: "smx-defaults__copy" },
         h("div", { className: "smx-defaults__title" }, "新会话沿用能力库开关"),
-        h("p", { className: "smx-defaults__description" }, "创建新会话时，自动启用能力库中已开启的 MCP 和技能。已有会话不变；工作区预设优先，子代理继承父会话。"),
+        h("p", { className: "smx-defaults__description" }, "创建新会话时，采用已配置的默认 MCP 和技能；尚未配置时沿用能力库开关。已有会话不变；工作区预设优先，子代理继承父会话。"),
         error ? h("p", { className: "smx-defaults__error", role: "alert" }, error) : null,
         !available ? h("span", { className: "smx-count" }, "宿主尚不支持此预设时，更新并重启 DSH 后可用") : null,
       ),
-      h(Switch, { checked: enabled, disabled: busy || !available, label: "新会话沿用能力库开关", onChange: change }),
+      h("div", { className: "smx-defaults__actions" },
+        h(Switch, { checked: enabled, disabled: busy || !available, label: "新会话沿用能力库开关", onChange: change }),
+        h("button", { type: "button", className: "smx-btn", "aria-haspopup": "dialog", disabled: busy || !configSupported,
+          title: configSupported ? undefined : "更新并重启 DSH 后可配置", onClick: () => setConfigOpen(true) }, "配置")),
+      configOpen ? h(LibraryDefaultsDialog, { onClose: () => setConfigOpen(false) }) : null,
     );
   }
 
@@ -2699,6 +2885,7 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx-form__error { color:var(--dsw-alias-state-error-primary); }",
     ".smx-form__ok { color:var(--dsw-alias-label-secondary); }",
     ".smx-form__path { font-family:ui-monospace,SFMono-Regular,Consolas,monospace; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }",
+    ".smx-form .smx-edit__json { min-height:90px; }",
     ".smx-textarea { box-sizing:border-box; width:100%; min-height:200px; resize:vertical; font-family:var(--ds-font-family-code,monospace); font-size:12px; line-height:1.6; padding:12px; border-radius:var(--dsw-radius-md,12px); border:.5px solid var(--dsw-alias-border-l3); background:var(--dsw-alias-bg-layer-1); color:var(--dsw-alias-label-primary); white-space:pre; overflow:auto; }",
     ".smx-setting__save { display:flex; justify-content:flex-end; align-items:center; gap:8px; }",
     ".smx-setting__label { flex:none; white-space:nowrap; font-size:13px; color:var(--dsw-alias-label-primary); }",
@@ -2856,6 +3043,20 @@ window.__ModuleLoader__.load({ id: "dsh-skill-mcp-manager", factory: (require) =
     ".smx button, .smx-view button, .smx-modal button, .smx-native-modal button { font-family:inherit; }",
     ".smx-defaults { display:flex; align-items:center; justify-content:space-between; gap:24px; padding:16px 20px; border:.5px solid var(--dsw-alias-border-l2); border-radius:var(--dsw-radius-lg,16px); background:var(--dsw-alias-settings-card-fill,var(--dsw-alias-bg-layer-2)); }",
     ".smx-defaults__copy { min-width:0; }",
+    ".smx-defaults__actions { display:flex; align-items:center; gap:12px; flex-shrink:0; }",
+    ".smx-default-editor { display:flex; flex-direction:column; gap:12px; }",
+    ".smx-default-editor__footer { margin-top:12px; flex-wrap:wrap; }",
+    ".smx-default-editor__columns { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }",
+    ".smx-default-editor__group { min-width:0; margin:0; padding:12px; border:.5px solid var(--dsw-alias-border-l3); border-radius:var(--dsw-radius-md,12px); }",
+    ".smx-default-editor__group legend { font-size:13px; padding:0 4px; }",
+    ".smx-default-editor__list { display:flex; flex-direction:column; gap:12px; max-height:40vh; overflow:auto; margin-top:12px; }",
+    ".smx-default-editor__source { display:flex; flex-direction:column; gap:10px; }",
+    ".smx-default-editor__source-head { display:flex; align-items:baseline; flex-wrap:wrap; gap:4px 8px; padding-bottom:6px; border-bottom:.5px solid var(--dsw-alias-border-l3); }",
+    ".smx-default-editor__source-title { margin:0; font-size:12px; font-weight:500; line-height:18px; overflow-wrap:anywhere; }",
+    ".smx-default-editor__item { display:flex; align-items:flex-start; gap:8px; cursor:pointer; font-size:12px; overflow-wrap:anywhere; }",
+    ".smx-default-editor__item input { flex-shrink:0; margin-top:3px; accent-color:var(--dsw-alias-brand-primary); }",
+    ".smx-default-editor__description { display:block; font-size:11px; color:var(--dsw-alias-label-secondary); line-height:17px; margin-top:3px; }",
+    "@media (max-width:640px) { .smx-default-editor__columns { grid-template-columns:minmax(0,1fr); } .smx-defaults { flex-wrap:wrap; } .smx-defaults__actions { margin-left:auto; } }",
     ".smx-defaults__title { font-size:14px; line-height:22px; font-weight:500; }",
     ".smx-defaults__description { margin:4px 0 0; max-width:720px; font-size:12px; line-height:19px; color:var(--dsw-alias-label-secondary); }",
     ".smx-defaults__error { margin:8px 0 0; font-size:12px; color:var(--dsw-alias-state-error-primary); }",

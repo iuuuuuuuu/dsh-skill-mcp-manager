@@ -5,12 +5,12 @@
 // tools) — plus the persisted allow list and the session-layer shadow that keeps a
 // switched-off skill out of the model-facing catalog.
 
-import { mkdir, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 
-const tmp = join(process.cwd(), ".test-session-caps-" + process.pid);
+const tmp = await mkdtemp(join(tmpdir(), "dsh-session-caps-"));
 const dataDir = join(tmp, "data");
-await rm(tmp, { recursive: true, force: true });
 await mkdir(dataDir, { recursive: true });
 // DSH_HOME is read when lib/index.js loads, so it must be set before the import —
 // otherwise the plugin bundle scan reads the real profiles (and their !!js tags).
@@ -795,6 +795,105 @@ const agent = makeAgent("sess-1");
   currentWorkspace = oldWorkspace;
 }
 
+// Independent library selection: real route, policy file, and agent creation.
+{
+  const scope = currentWorkspace;
+  currentWorkspace = join(tmp, "configured-defaults-workspace");
+  const settingsPath = "/skill-mcp-manager/settings";
+  const libraryPath = "/skill-mcp-manager/library-defaults";
+  const settings = (body) => caps("POST", body, settingsPath);
+  const library = () => caps("GET", undefined, libraryPath);
+  const create = async (id, header = {}, source = "startup") => {
+    const agent = makeAgent(id);
+    agent.session.header = { id, cwd: currentWorkspace, ...header };
+    for (const listener of createdAgents) await listener({ agent, source });
+    if (source === "resume") await preStep(agent);
+    return (await caps("GET", { session: id })).body;
+  };
+  const on = (state, kind, name) => state[kind]?.find((row) => row.name === name)?.enabled === true;
+  skills["picker-plugin"] = { name: "picker-plugin", description: "Plugin fixture", provider: "picker-provider", invocation: { modelInvocable: true }, content: "# Plugin" };
+  const first = await library();
+  check(first.status === 200 && first.body.configured === false && first.body.selection.mcp.includes("alpha"),
+    "unconfigured picker must be prefilled from the live library even with its master switch off");
+  check(first.body.mcp.find((x) => x.name === "beta")?.available === false && !first.body.selection.mcp.includes("beta"),
+    "a global off item may be shown but must not be preselected");
+  check(first.body.skills.some((x) => x.name === "only-standing") && !first.body.skills.some((x) => x.name === "only-conversation"),
+    "picker must use library rather than conversation scope");
+  check(first.body.mcp.find((x) => x.name === "alpha")?.source === "registry"
+    && first.body.mcp.find((x) => x.name === "sequential")?.source === "plugin"
+    && first.body.mcp.find((x) => x.name === "sequential")?.owner === null,
+    "picker must expose registry/plugin provenance without inventing an unknown owner");
+  check(first.body.skills.find((x) => x.name === "skill-one")?.origin?.kind === "system"
+    && first.body.skills.find((x) => x.name === "picker-plugin")?.origin?.key === "picker-provider",
+    "picker must reuse provider-based system/plugin skill provenance, including runtime-only skills");
+  check(first.body.mcp.every((x) => Object.keys(x).every((key) => ["name", "description", "available", "source", "owner"].includes(key)))
+    && first.body.skills.every((x) => Object.keys(x).every((key) => ["name", "description", "available", "source", "provider", "origin"].includes(key))),
+    "library picker must expose only display metadata, never paths or connection fields");
+
+  await settings({ inheritLibraryDefaults: true });
+  await create("configured-old");
+  const registryBefore = await readFile(join(dataDir, "registry.json"), "utf8");
+  const policiesBefore = await readFile(join(dataDir, "session-caps.json"), "utf8");
+  const invalid = await settings({ libraryDefaults: { mcp: [], skills: "bad" } });
+  check(invalid.status === 400 && (await library()).body.configured === false, "malformed settings leave no selection behind");
+  skills["skill-one"].invocation.modelInvocable = false;
+  const selected = { mcp: ["sequential", "beta", "temporarily-missing-mcp", "sequential"], skills: ["workspace-skill", "skill-one", "only-standing"] };
+  const saved = await settings({ libraryDefaults: selected });
+  check(saved.status === 200 && saved.body.inheritLibraryDefaults === true && saved.body.libraryDefaults?.mcp.length === 3,
+    "saving the independent list normalizes duplicates and leaves the switch on");
+  const picker = (await library()).body;
+  check(picker.configured === true && picker.selection.skills.includes("skill-one") && picker.mcp.find((x) => x.name === "temporarily-missing-mcp")?.available === false,
+    "configured names persist when no longer available in the picker");
+  check(picker.mcp.find((x) => x.name === "temporarily-missing-mcp")?.source === "missing",
+    "missing saved names must not be falsely grouped as registry or plugin entries");
+  check(await readFile(join(dataDir, "registry.json"), "utf8") === registryBefore && pluginEnabled && skills["skill-one"].invocation.modelInvocable === false,
+    "default selection must not alter the global registry or plugin/skill switches");
+  check(await readFile(join(dataDir, "session-caps.json"), "utf8") === policiesBefore,
+    "saving defaults must not alter existing session policies");
+  check(on((await caps("GET", { session: "configured-old" })).body, "mcp", "alpha"), "old session keeps its fallback selection");
+
+  const fresh = await create("configured-new");
+  check(on(fresh, "mcp", "sequential") && !on(fresh, "mcp", "alpha") && !on(fresh, "mcp", "beta"), "new root must select only the available saved MCP list");
+  check(on(fresh, "skills", "workspace-skill") && !on(fresh, "skills", "skill-one") && !on(fresh, "skills", "only-conversation"),
+    "new root must select only the saved skills model-invocable in its actual scope");
+  const disk = async (id) => JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"))[id];
+  check(!(await disk("configured-new")).skills.includes("only-standing"), "skill not in this agent scope must not enter its policy");
+  const resumed = await create("configured-resumed", {}, "resume");
+  check(!on(resumed, "mcp", "sequential"), "resume must not add newly configured defaults");
+
+  await settings({ libraryDefaults: { mcp: ["alpha"], skills: [] } });
+  const child = await create("configured-child", { origin: "subagent", parentSession: "configured-new" });
+  check(on(child, "mcp", "sequential") && !on(child, "mcp", "alpha") && (await disk("configured-child")).inheritFrom === "configured-new",
+    "child must inherit the existing parent choice and ignore new configured defaults");
+  const presetPath = "/skill-mcp-manager/workspace-defaults";
+  const presetSave = await caps("POST", { workspace: currentWorkspace, action: "save-current", session: "configured-resumed" }, presetPath);
+  check(presetSave.status === 200 && presetSave.body.configured && presetSave.body.mcp.length === 0 && presetSave.body.skills.length === 0,
+    "workspace preset fixture must be explicitly saved as empty");
+  const override = await create("configured-with-workspace");
+  check(!on(override, "mcp", "alpha") && (await disk("configured-with-workspace")).mcp.length === 0,
+    "explicit workspace default, even empty, must override fixed library selection");
+  await caps("POST", { workspace: currentWorkspace, action: "clear" }, presetPath);
+
+  await Promise.all([settings({ inheritLibraryDefaults: false }), settings({ libraryDefaults: { mcp: ["alpha"], skills: [] } })]);
+  const off = await create("configured-disabled");
+  check(!on(off, "mcp", "alpha") && (await library()).body.selection.mcp.includes("alpha"),
+    "master switch off ignores fixed selection without erasing it, even with concurrent requests");
+  await settings({ inheritLibraryDefaults: true });
+  await settings({ libraryDefaults: { mcp: [], skills: [] } });
+  const emptyView = (await library()).body;
+  check(emptyView.configured && emptyView.selection.mcp.length === 0 && emptyView.selection.skills.length === 0,
+    "saved empty is not the same as legacy fallback on reopening");
+  await create("configured-empty");
+  const empty = await disk("configured-empty");
+  check(empty.mcp.length === 0 && empty.skills.length === 0, "empty selection must not seed library capabilities");
+  await settings({ libraryDefaults: null });
+  const following = await create("configured-restore-fallback");
+  check(!(await library()).body.configured && on(following, "mcp", "alpha"), "reset must restore live library fallback");
+  skills["skill-one"].invocation.modelInvocable = true;
+  delete skills["picker-plugin"];
+  currentWorkspace = scope;
+}
+
 // Reload must preserve inherited relations, detached overrides, empty choices and
 // fail-closed handling of damaged chains; it must not reseed from the workspace.
 {
@@ -856,9 +955,13 @@ const agent = makeAgent("sess-1");
 {
   const stored = JSON.parse(await readFile(join(dataDir, "settings.json"), "utf8"));
   stored.inheritLibraryDefaults = true;
+  stored.libraryDefaults = { mcp: ["sequential"], skills: [] };
   await writeFile(join(dataDir, "settings.json"), JSON.stringify(stored), "utf8");
   const reloadRoutes = [], reloadCreated = [];
-  const web = { register(route) { reloadRoutes.push(route); return () => {}; } };
+  const web = { register(route) {
+    if (reloadRoutes.some((x) => x.kind === route.kind && x.path === route.path)) throw new Error("duplicate route " + route.path);
+    reloadRoutes.push(route); return () => {};
+  } };
   const reloadCtx = { ...ctx, webServer: web,
     on(event, fn) { if (event === "agent/created") reloadCreated.push(fn); return () => {}; },
     get(name) { return name === "webServer" ? web : ctx.get(name); },
@@ -866,10 +969,16 @@ const agent = makeAgent("sess-1");
   };
   await apply(reloadCtx, { dataDir, profile: "__test__", importNativeMcp: false });
   const agent = makeAgent("library-default-reloaded");
-  agent.session.header = { id: agent.session.id, cwd: join(tmp, "reload-workspace") };
+  agent.session.cwd = join(tmp, "reload-workspace");
+  agent.session.header = { id: agent.session.id, cwd: agent.session.cwd };
   for (const fn of reloadCreated) await fn({ agent });
   const saved = JSON.parse(await readFile(join(dataDir, "session-caps.json"), "utf8"));
-  check(saved[agent.session.id]?.mcp.includes("alpha"), "persisted default must seed new conversations after reload");
+  check(saved[agent.session.id]?.mcp.join(",") === "sequential" && saved[agent.session.id]?.skills.length === 0,
+    "persisted fixed selection, not the live library switches, must seed new conversations after reload");
+  const view = makeRes();
+  await reloadRoutes.find((x) => x.path === "/skill-mcp-manager/library-defaults").handler(makeReq("GET", "/skill-mcp-manager/library-defaults"), view);
+  check(view.status === 200 && bodyOf(view).configured && bodyOf(view).selection.mcp.join(",") === "sequential",
+    "picker must return the persisted fixed selection after reload");
 }
 
 for (const disposer of effects) { try { await disposer(); } catch { /* best effort */ } }

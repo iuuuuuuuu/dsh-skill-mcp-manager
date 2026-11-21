@@ -18,6 +18,10 @@ SKILL 管理
 
 安装了哪些 Skill **和** MCP？是否启用？每个SKILL和MCP是什么？都在设置页直接查看，**不用层层翻找**。Skill 与 MCP 都以卡片呈现：名字、路径/传输方式、工具数、当前档位和状态一眼可见，操作按钮就在自己那张卡上；环境变量、headers、工具清单这类长内容收进 DSH 原生居中详情弹窗，不再把列表撑成一堵墙。前端页面直接管理MCP和Skill启停、删除，支持点击SKILL查看原文（使用本地默认的md阅读器）。每个 MCP 工具也可单独启用或禁用，禁用后 AI 无法调用，不影响同服务器的其他工具。
 
+### 编辑自己的 MCP 与技能
+
+非插件 MCP 卡片支持「编辑」连接参数、环境变量、请求头、档位与备注；自己的文件型技能支持在弹窗编辑完整 SKILL.md（含 frontmatter）。插件提供的 MCP / 技能、随包只读技能和运行时技能不开放编辑；名称保持不变。保存前校验并检查外部修改冲突，取消不写入。
+
 ### 1.1 技能按来源分组
 
 技能页按「谁提供」分组：「系统」组是你自己的目录（`~/.dsh/skills`、`~/.agents/skills`、外接递归目录），每个**插件**各成一组（组标题带包名，例如「插件 · @acme/agent-notes」）。插件组**默认展开**，组头一个总开关：关掉就把该插件下的技能一次性写成 `disable-model-invocation`（模型不可见），开回来原样还原；随包只读的技能不会被改动，会明确告诉你跳过了几个。
@@ -34,7 +38,7 @@ stdio MCP 被异常重启/失败激活后，系统里常留下整条 `npx → cm
 
 对话的视图切换里（就在「轨迹」旁边）多了一张**能力管理**：按当前对话列出可用的 MCP 服务器与技能，每张卡片一个开关。
 
-- **新会话预设**：在能力库顶部开启「新会话沿用能力库开关」，之后的新会话会自动启用库中当前开启的 MCP 与模型可见技能；每个新会话保存独立策略，已有会话不会被覆盖。工作区已保存的预设优先，子代理仍继承父会话。该选项默认关闭，未开启时仍只自动启用项目自身提供的能力，其余在能力管理里开启。
+- **新会话默认能力**：开启能力库顶部的「新会话沿用能力库开关」后，新会话采用「配置」保存的 MCP 和技能；未配置时沿用库开关。已有会话不变；工作区预设优先，子代理继承父会话。
 - **两类分开批量**：MCP 段和技能段各有自己的「全部开启 / 全部关闭」，再往下每个组还有「全开 / 全关」。
 - **按来源分组**：MCP 分「我的 MCP 服务器」与每个插件（插件自带的服务器），技能分「系统」与每个插件。
 - **即时生效**：关掉的 MCP 立刻断开并从本对话目录里消失、`mcp_load`/`mcp_call` 直接拒绝；技能从技能目录里消失、加载调用被本对话的守卫拒绝。全局配置与技能文件都不动，重开对话仍然记得。
@@ -164,7 +168,7 @@ dsh plugin --profile <profile> add dsh-skill-mcp-manager
 ## 数据
 
 - `~/.dsh/skill-mcp-manager/registry.json` —— 权威 MCP 注册表（version 1，`entries[]`）。
-- `~/.dsh/skill-mcp-manager/settings.json` —— 插件设置（`customRecursiveDirs`、`toolDescriptionMaxLength`、`stdioMaxBufferSizeMb`、`inheritLibraryDefaults` 等）。
+- `~/.dsh/skill-mcp-manager/settings.json` —— 插件设置（`customRecursiveDirs`、`toolDescriptionMaxLength`、`stdioMaxBufferSizeMb`、`inheritLibraryDefaults`、`libraryDefaults` 等）。在能力库「配置」中选择新会话默认启用的 MCP 与技能；未独立配置时沿用库开关，不改变已有会话。
 - `~/.dsh/skill-mcp-manager/trash.log` —— 删除审计。
 - env 值可为明文或 `$VAR` 进程环境变量引用。
 

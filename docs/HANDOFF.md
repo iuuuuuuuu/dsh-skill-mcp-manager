@@ -63,7 +63,7 @@ node test/mcp-call-guard-smoke.mjs
 node test/mcp-load-schema-smoke.mjs
 
 # 重装进 desktop（改完代码后，pnpm 对 file: 依赖要 remove+add 才刷新）
-cd C:\Users\Zinger\.dsh\profiles\desktop
+cd $HOME\.dsh\profiles\desktop
 pnpm remove dsh-skill-mcp-manager
 pnpm add "file:D:/Github/dsh-skill-mcp-manager"
 # 然后重启 DSH
@@ -85,4 +85,4 @@ node --check lib/skill.js
 ## 参考源码模式（已对齐）
 
 - `dsh-mcp-client`（MCP SDK 客户端 + 工具注册）、`dsh-tool-skill`（pre-step 注入 + 命令）、`dsh-command-compact`（命令注册）、`dsh-skill-filesystem`（frontmatter 解析）。
-- 这些都在 `C:\Users\Zinger\AppData\Local\Programs\DSH Desktop\resources\app.asar.unpacked\node_modules\@deepseek-ai\` 下。
+- 这些都在 `$HOME\AppData\Local\Programs\DSH Desktop\resources\app.asar.unpacked\node_modules\@deepseek-ai\` 下。

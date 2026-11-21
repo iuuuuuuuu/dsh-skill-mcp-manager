@@ -18,13 +18,17 @@ SKILL management
 
 Which Skills **and** MCPs are installed? Are they enabled? What does each one do? All visible directly in the settings page — **no digging through layers**. Skills and MCPs render as cards: name, path/transport, tool count, tier and current status at a glance, with the actions belonging to that card. Long content (env, headers, the tool list) moved into a centered native DSH detail dialog instead of stretching the list into a wall. Enable/disable and delete MCPs and Skills from the UI, and click a SKILL to view its source (opens with your local default markdown reader). Each MCP tool can also be enabled or disabled independently; a disabled tool cannot be called by the AI and does not affect other tools on the same server.
 
+### Edit your own MCPs and skills
+
+Non-plugin MCP cards offer an editor for connection parameters, environment variables, headers, tier and notes. Your own file-based skills can be edited as a complete SKILL.md, including frontmatter. Plugin-provided MCPs and skills, shipped files and runtime-only skills remain read-only. Names stay fixed; saves validate content and detect concurrent changes, and cancelling writes nothing.
+
 ### 1.1 Skills grouped by origin
 
-The skills page groups by who provides the skill: a 「系统」 group for your own directories (`~/.dsh/skills`, `~/.agents/skills`, extra recursive dirs), and one group per **plugin** (titled with the package name, e.g. “插件 · @acme/agent-notes”). Plugin groups start folded and carry a master switch: turning it off writes `disable-model-invocation` to every skill that plugin provides, turning it back on restores them exactly; shipped/read-only skills are never written and are reported as skipped.
+The skills page groups by who provides the skill: a 「系统」 group for your own directories (`~/.dsh/skills`, `~/.agents/skills`, extra recursive dirs), and one group per **plugin** (titled with the package name, e.g. “插件 · @acme/agent-notes”). Plugin groups start expanded and carry a master switch: turning it off writes `disable-model-invocation` to every skill that plugin provides, turning it back on restores them exactly; shipped/read-only skills are never written and are reported as skipped.
 
 ### 1.2 Plugin-provided MCPs, switched live
 
-Some MCP servers are injected by a plugin's own config (box, for example); the library used to neither see nor switch them. They now appear under a “插件 · <package>” group (folded by default, with a group master switch and per-row switches) and the switch takes effect **immediately**: turning one off stops that connection on the spot (the child process is observed to exit), turning it back on reconnects — **no DSH restart**. Those rows do not belong to the library, so a restart returns them to the plugin's default.
+Some MCP servers are injected by a plugin's own config (box, for example); the library used to neither see nor switch them. They now appear under a “插件 · <package>” group (expanded by default, with a group master switch and per-row switches) and the switch takes effect **immediately**: turning one off stops that connection on the spot (the child process is observed to exit), turning it back on reconnects — **no DSH restart**. Those rows do not belong to the library, so a restart returns them to the plugin's default.
 
 ### 1.3 Clean up residual MCP child processes
 
@@ -34,7 +38,7 @@ A crashed or failed stdio MCP leaves its whole `npx → cmd → node` chain behi
 
 The conversation's view switcher (next to the trajectory view) gains a **能力管理** tab: one card and one switch per MCP server and per skill, for *this* conversation only.
 
-- **New-session preset**: enable “新会话沿用能力库开关” at the top of the library to initialize future conversations from the currently enabled MCPs and model-invocable skills. Each new conversation gets an independent policy; existing conversations are untouched. Explicit workspace defaults take priority, and subagents still inherit their parent. The option is off by default; without it, only workspace-owned capabilities are enabled automatically.
+- **New-session preset**: enable “新会话沿用能力库开关” at the top of the library to use the selection saved in Configure. Until configured, future sessions follow the currently enabled MCPs and model-invocable skills. Each new conversation gets an independent policy; existing conversations are untouched. Explicit workspace defaults take priority, and subagents still inherit their parent. The option is off by default; without it, only workspace-owned capabilities are enabled automatically.
 - **Bulk switches are per kind**: MCP and skills each have their own *enable all / disable all*, and every group inside them has its own pair too.
 - **Grouped by origin**: MCP splits into your own servers and one group per plugin that mounts its own; skills split into 系统 and one group per plugin.
 - **Immediate**: a server that turns off is disconnected and dropped from this conversation's catalog, `mcp_load`/`mcp_call` refuse it, and a skill that turns off leaves the skill catalog while its load call is denied by a guard registered on this conversation. Global configuration and skill files are untouched, and the policy survives reopening the conversation.
@@ -164,7 +168,7 @@ The plugin provides three small, fixed tools to manage all on-demand MCPs.
 ## Data
 
 - `~/.dsh/skill-mcp-manager/registry.json` — authoritative MCP registry (version 1, `entries[]`).
-- `~/.dsh/skill-mcp-manager/settings.json` — plugin settings (`customRecursiveDirs`, `toolDescriptionMaxLength`, `inheritLibraryDefaults`, …).
+- `~/.dsh/skill-mcp-manager/settings.json` — plugin settings (`customRecursiveDirs`, `toolDescriptionMaxLength`, `inheritLibraryDefaults`, `libraryDefaults`, …). Use Configure in the library to choose MCP servers and skills for future sessions; without a saved selection, new sessions follow the library switches when opted in.
 - `~/.dsh/skill-mcp-manager/trash.log` — delete audit.
 - Env values may be literals or `$VAR` references to the process environment.
 

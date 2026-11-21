@@ -88,7 +88,7 @@ globalThis.fetch = async (url) => {
       workspaces: [{ id: "w1", title: "demo", path: "/work/demo" }],
       skills: [
         { name: "web-search", description: "搜索", path: "/a/web-search/SKILL.md", directory: "/a", provider: "filesystem", modelInvocable: true, userInvocable: true, readonly: false, origin: { kind: "system", key: "system", label: "系统", provider: "filesystem", package: null, runtime: false } },
-        { name: "agent-notes", description: "笔记", path: "/b/agent-notes/SKILL.md", directory: "/b", provider: "agent-notes", modelInvocable: true, userInvocable: true, readonly: true, origin: { kind: "plugin", key: "agent-notes", label: "agent-notes", provider: "agent-notes", package: "@acme/agent-notes", runtime: false } },
+        { name: "agent-notes", description: "笔记", path: "/b/agent-notes/SKILL.md", directory: "/b", provider: "agent-notes", modelInvocable: true, userInvocable: true, readonly: false, origin: { kind: "plugin", key: "agent-notes", label: "agent-notes", provider: "agent-notes", package: "@acme/agent-notes", runtime: false } },
         { name: "big-1", description: "一", path: "/c/1/SKILL.md", directory: "/c", provider: "big", modelInvocable: true, userInvocable: true, readonly: true, origin: { kind: "plugin", key: "big", label: "big", provider: "big", package: "@acme/big", runtime: false } },
         { name: "big-2", description: "二", path: "/c/2/SKILL.md", directory: "/c", provider: "big", modelInvocable: true, userInvocable: true, readonly: true, origin: { kind: "plugin", key: "big", label: "big", provider: "big", package: "@acme/big", runtime: false } },
         { name: "big-3", description: "三", path: "/c/3/SKILL.md", directory: "/c", provider: "big", modelInvocable: true, userInvocable: true, readonly: true, origin: { kind: "plugin", key: "big", label: "big", provider: "big", package: "@acme/big", runtime: false } },
@@ -223,6 +223,17 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
   console.log("panel nodes (" + tabLabel + "):", nodes);
   check(nodes > 20, "the panel must build a real tree on the " + tabLabel + " tab, got " + nodes + " nodes");
   check(findText(tree, "能力库").length > 0, "the panel must render its title (" + tabLabel + " tab)");
+  const editCards = [];
+  function collectEditCards(node) {
+    if (!node || typeof node !== "object") return;
+    if (typeof node.props?.className === "string" && node.props.className.split(" ").includes("smx-card")) editCards.push(node);
+    for (const child of node.children || []) collectEditCards(child);
+  }
+  collectEditCards(tree);
+  const ownEditCard = editCards.find((node) => findText(node, tabLabel === "mcp" ? "registry-stopped" : "web-search").length > 0);
+  const pluginEditCard = editCards.find((node) => findText(node, tabLabel === "mcp" ? "plugin-stopped" : "agent-notes").length > 0);
+  check(ownEditCard && findText(ownEditCard, "编辑").length === 1, "own capability card must offer editing: " + tabLabel);
+  check(pluginEditCard && findText(pluginEditCard, "编辑").length === 0, "plugin capability must not offer editing, even at a writable path: " + tabLabel);
   if (tabLabel === "mcp") {
     check(findText(tree, "全部检测").length > 0, "the MCP tab must render its toolbar");
     check(findText(tree, "新增 MCP").length > 0, "the MCP tab must offer 新增 MCP");
@@ -317,15 +328,46 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
 {
   for (const key of Object.keys(stateOverrides)) delete stateOverrides[key];
   const previousFetch = globalThis.fetch;
-  let flag = false, reject = false, writes = 0;
+  let flag = false, reject = false, writes = 0, selection = null, legacy = false;
+  let provenance = true, fallback = true;
+  const defaultMcp = [
+    { name: "fixture-mcp", description: "fixture", available: true, source: "registry" },
+    { name: "plugin-a", description: "First bridge", available: true, source: "plugin", owner: "@acme/mcp" },
+    { name: "plugin-b", description: "Second bridge", available: true, source: "plugin", owner: "@acme/mcp" },
+    { name: "unowned", description: "No owner", available: true, source: "plugin", owner: null },
+    { name: "stopped", description: "Stopped", available: false, source: "registry" },
+    { name: "missing", description: "Missing saved item", available: false, source: "missing" },
+  ];
+  const defaultSkills = [
+    { name: "fixture-skill", description: "fixture", available: true, provider: "filesystem" },
+    { name: "plugin-skill", description: "Notes", available: true, provider: "notes", origin: { kind: "plugin", key: "notes", package: "@acme/notes" } },
+    { name: "runtime-skill", description: "Runtime", available: true, provider: "runtime-doc" },
+  ];
+  const oldProjection = ({ source, owner, provider, origin, ...item }) => item;
   globalThis.fetch = async (url, options) => {
+    if (String(url) === "/skill-mcp-manager/library-defaults") return json({
+      ok: true, configured: selection !== null,
+      selection: selection ?? { mcp: ["fixture-mcp"], skills: ["fixture-skill"] },
+      mcp: provenance ? defaultMcp : defaultMcp.map(oldProjection),
+      skills: provenance ? defaultSkills : defaultSkills.map(oldProjection),
+    });
+    if (!provenance && ["/skill-mcp-manager/mcp", "/skill-mcp-manager/skills"].includes(String(url))) {
+      if (!fallback) return { ok: false, status: 404, json: async () => ({ error: "missing fixture route" }) };
+      if (String(url).endsWith("/mcp")) return json({
+        entries: defaultMcp.filter((item) => item.source === "registry"),
+        native: { entries: defaultMcp.filter((item) => item.source === "plugin").map((item) => ({ serverName: item.name, owner: item.owner })) },
+      });
+      return json({ skills: defaultSkills });
+    }
     if (String(url) !== "/skill-mcp-manager/settings") return previousFetch(url, options);
     if (options?.method === "POST") {
       writes += 1;
       if (reject) return { ok: false, status: 400, json: async () => ({ error: "preset save fixture failure" }) };
-      flag = JSON.parse(options.body).inheritLibraryDefaults;
+      const request = JSON.parse(options.body);
+      if (Object.hasOwn(request, "inheritLibraryDefaults")) flag = request.inheritLibraryDefaults;
+      if (Object.hasOwn(request, "libraryDefaults")) selection = request.libraryDefaults;
     }
-    return json({ ok: true, inheritLibraryDefaults: flag });
+    return json({ ok: true, inheritLibraryDefaults: flag, ...(legacy ? {} : { libraryDefaults: selection }) });
   };
   const nodes = (tree, predicate, out = []) => {
     if (!tree || typeof tree !== "object") return out;
@@ -344,11 +386,106 @@ for (const [tabLabel, override] of [["mcp", {}], ["skills", { "ManagerSection:0"
     await control().props.onClick();
     tree = renderComponent("library defaults enabled", panel.component, props, true);
     check(flag && writes === 1 && control().props["aria-checked"] === "true", "preset click must persist its flag and reflect accepted host state");
+    const button = (label) => nodes(tree, (node) => node.type === "button" && node.children.includes(label))[0];
+    const checkbox = (name) => nodes(tree, (node) => node.props.type === "checkbox" && node.props["aria-label"] === name)[0];
+    check(button("配置")?.props.disabled === false, "supported host must offer an enabled Configure button");
+    button("配置").props.onClick();
+    tree = renderComponent("library dialog loading", panel.component, props, true);
+    check(findText(tree, "正在加载能力目录…").length > 0 && button("保存默认配置")?.props.disabled, "loading must not enable save");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    tree = renderComponent("library dialog loaded", panel.component, props, true);
+    check(nodes(tree, (node) => node.props.role === "dialog").length === 1, "default picker must use the shared dialog");
+    check(checkbox("MCP fixture-mcp")?.props.checked && checkbox("技能 fixture-skill")?.props.checked, "separate lists must load preselected values");
+    const dialog = () => nodes(tree, (node) => node.props.role === "dialog")[0];
+    const group = (label) => nodes(dialog(), (node) => node.props.role === "group" && node.props["aria-label"] === label)[0];
+    check(group("我的 MCP 服务器") && group("系统"), "default picker must distinguish registry MCP and system skills");
+    check(nodes(group("插件 · @acme/mcp"), (node) => node.props.type === "checkbox").length === 2,
+      "MCP entries from one owner must appear together under the plugin name");
+    check(nodes(group("插件 · @acme/notes"), (node) => node.props["aria-label"] === "技能 plugin-skill").length === 1,
+      "skill group must identify its package, not guess from the description");
+    check(group("插件 · runtime-doc") && group("未归属插件") && group("暂不可用"),
+      "runtime providers, unowned plugins and missing saved names need honest source groups");
+    check(checkbox("MCP stopped").props.disabled && checkbox("MCP missing").props.disabled,
+      "grouping must not enable unavailable unchecked entries");
+    const searchBox = () => nodes(dialog(), (node) => node.props["aria-label"] === "筛选默认能力")[0];
+    searchBox().props.onChange({ target: { value: " @ACME/MCP " } });
+    tree = renderComponent("default picker plugin search", panel.component, props, true);
+    check(checkbox("MCP plugin-a") && checkbox("MCP plugin-b") && !checkbox("MCP fixture-mcp") && !checkbox("技能 plugin-skill"),
+      "search must match plugin ownership case-insensitively and hide unrelated groups");
+    searchBox().props.onChange({ target: { value: "no-result-fixture" } });
+    tree = renderComponent("default picker empty search", panel.component, props, true);
+    check(findText(dialog(), "没有匹配的能力").length === 2, "each empty search result must explain why the list is empty");
+    searchBox().props.onChange({ target: { value: "" } });
+    tree = renderComponent("default picker cleared search", panel.component, props, true);
+    check(checkbox("MCP fixture-mcp").props.checked && checkbox("技能 fixture-skill").props.checked,
+      "filtering source groups must never erase hidden selections");
+    checkbox("MCP fixture-mcp").props.onChange({ target: { checked: false } });
+    tree = renderComponent("library dialog edited", panel.component, props, true);
+    check(!checkbox("MCP fixture-mcp").props.checked && checkbox("技能 fixture-skill").props.checked, "changing MCP must not flip the selected skill");
+    button("取消").props.onClick();
+    tree = renderComponent("library dialog cancelled", panel.component, props, true);
+    check(!button("保存默认配置") && writes === 1 && selection === null, "cancel must close and not make a request");
+    // Start a new tree to emulate reload and real modal unmount (this tiny renderer
+    // intentionally retains unused instance slots across keepInstances rerenders).
+    renderComponent("library page refreshed", panel.component, props);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    tree = renderComponent("refreshed library ready", panel.component, props, true);
+    button("配置").props.onClick();
+    renderComponent("reopened library dialog loading", panel.component, props, true);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    tree = renderComponent("reopened library dialog ready", panel.component, props, true);
+    check(checkbox("MCP fixture-mcp").props.checked, "cancelled draft must not appear on next load");
+    checkbox("MCP fixture-mcp").props.onChange({ target: { checked: false } });
+    checkbox("技能 fixture-skill").props.onChange({ target: { checked: false } });
+    tree = renderComponent("library defaults emptied", panel.component, props, true);
+    await button("保存默认配置").props.onClick();
+    tree = renderComponent("library defaults saved", panel.component, props, true);
+    check(flag && writes === 2 && JSON.stringify(selection) === '{"mcp":[],"skills":[]}' && !button("保存默认配置"),
+      "save must submit both empty lists and close only after confirmation, without changing the switch");
+    renderComponent("library page refreshed after save", panel.component, props);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    tree = renderComponent("saved library page ready", panel.component, props, true);
+    button("配置").props.onClick();
+    renderComponent("saved library dialog loading", panel.component, props, true);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    tree = renderComponent("saved library dialog ready", panel.component, props, true);
+    check(!checkbox("MCP fixture-mcp").props.checked && !checkbox("技能 fixture-skill").props.checked, "reloaded dialog must render the saved empty selection as empty");
+    button("取消").props.onClick();
+    tree = renderComponent("saved library dialog closed", panel.component, props, true);
+    provenance = false;
+    renderComponent("old provenance host", panel.component, props);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    tree = renderComponent("old provenance host ready", panel.component, props, true);
+    button("配置").props.onClick();
+    renderComponent("old provenance dialog loading", panel.component, props, true);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    tree = renderComponent("old provenance dialog ready", panel.component, props, true);
+    check(group("插件 · @acme/mcp") && group("插件 · @acme/notes") && group("系统"),
+      "new client on old host must enrich ownership from existing catalog routes");
+    check(!checkbox("MCP fixture-mcp").props.checked && !checkbox("技能 fixture-skill").props.checked,
+      "fallback metadata must not replace the saved selection");
+    fallback = false;
+    renderComponent("host without provenance routes", panel.component, props);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    tree = renderComponent("host without provenance ready", panel.component, props, true);
+    button("配置").props.onClick();
+    renderComponent("unidentified provenance dialog loading", panel.component, props, true);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    tree = renderComponent("unidentified provenance dialog ready", panel.component, props, true);
+    check(group("来源待识别") && !group("系统") && checkbox("MCP fixture-mcp"),
+      "failed metadata enrichment must keep the picker usable without inventing ownership");
+    button("取消").props.onClick();
+    tree = renderComponent("fallback dialog closed", panel.component, props, true);
     reject = true;
     await control().props.onClick();
     tree = renderComponent("library defaults failed", panel.component, props, true);
     check(control().props["aria-checked"] === "true" && findText(tree, "preset save fixture failure").length > 0,
       "failed preset save must retain accepted switch state and report error");
+    legacy = true;
+    renderComponent("old host with existing switch", panel.component, props);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    tree = renderComponent("old host without configuration", panel.component, props, true);
+    check(!control().props.disabled && button("配置").props.disabled, "older host can keep the old switch but must not advertise configuration");
     globalThis.fetch = async (url, options) => String(url) === "/skill-mcp-manager/settings"
       ? json({ ok: true }) : previousFetch(url, options);
     renderComponent("legacy preset initial", panel.component, props);

@@ -30,7 +30,7 @@ const WRITABLE = {
 const SHIPPED = {
   name: "cordis-plugin-development",
   description: "Develop dynamic plugins",
-  path: "C:/Users/Zinger/AppData/Local/Programs/DSH Desktop/resources/app.asar.unpacked/node_modules/@deepseek-ai/dsh/config/agent-presets/cordis/skills/cordis-plugin-development/SKILL.md",
+  path: "C:/example-home/AppData/Local/Programs/DSH Desktop/resources/app.asar.unpacked/node_modules/@deepseek-ai/dsh/config/agent-presets/cordis/skills/cordis-plugin-development/SKILL.md",
   source: "custom",
   provider: "skill-mcp-manager-recursive",
   invocation: { modelInvocable: true, userInvocable: true },
@@ -38,7 +38,7 @@ const SHIPPED = {
 const JUNCTION = {
   name: "capability-entry",
   description: "Capability library entry",
-  path: "C:/Users/Zinger/.dsh/skills/capability-entry/SKILL.md",
+  path: "C:/example-home/.dsh/skills/capability-entry/SKILL.md",
   source: "user-dsh",
   provider: "filesystem",
   invocation: { modelInvocable: true, userInvocable: true },
